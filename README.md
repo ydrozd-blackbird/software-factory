@@ -55,22 +55,29 @@ Running the skill allows the factory to push its branch and open a pull request.
 | Stage | Who | What happens |
 |---|---|---|
 | Research | Opus | Agents cover code, spec, web, security, architecture, and machine capacity. An architect and critics turn the findings into `SPEC.md`. |
-| Build and test | Haiku + Sonnet | Pairs work in separate git worktrees, each with its own port and database. Haiku fixes critical and high bugs until none remain or the cycle limit is reached. Medium and low bugs are logged. |
+| Build and test | Haiku + Sonnet | Pairs work in separate git worktrees, usually each with its own port and database. Haiku fixes critical and high bugs until none remain or the cycle limit is reached. Medium and low bugs are logged. |
 | Merge and accept | Opus + Haiku | A merger integrates each wave. Opus then tests against the spec and Haiku fixes what it finds. |
-| Ship | Lead session | The work goes up as `feature/`, `bugfix/`, or `hotfix/` with a pull request, following Git Flow. The factory then removes its worktrees and reports back. |
+| Ship | Lead session | The work goes up as `feature/`, `bugfix/`, or `hotfix/` with a pull request, following Git Flow. The factory then removes its worktrees and publishes an agent ledger. |
 
 The session you talk to is the lead. It dispatches agents, passes context between teams, and verifies results, but writes no product code.
 
+## What you get
+
+- **A pull request** whose description stands alone: what changed, how it was tested, and any open bugs. It's a draft if anything couldn't be verified.
+- **An agent ledger**, published as a private Claude artifact where that's available and saved to `.factory/LEDGER.html` either way. It shows every agent's model, timing, tokens, and tool calls from Claude Code's own records, along with each package's outcome. It never includes prompts or agent output.
+
 ## Before you run it
 
-- **Cost:** a large run can use hundreds of agents. Use it when speed matters more than token cost.
+- **Cost:** a large run can use hundreds of agents. Use it when speed matters more than token cost. It isn't tuned for small changes yet.
+- **Permissions:** to run unattended, pre-approve the commands it needs, such as `git`, `docker`, your database tools, and `gh` or `glab`. Otherwise the first permission prompt pauses the run until you answer.
 - **Machine:** the factory measures RAM, CPU, and disk to choose how many lanes to run, and it mocks what it can to fit more.
-- **Status:** the worktree script, cleanup steps, and agent loop have been checked in a throwaway repo with stubbed agents. The skill hasn't completed a real build yet, and its push and pull request step is untested.
+- **Status:** this is an early release with little real-world use. The worktree script, git steps, and agent loop have been checked in a throwaway repo with stubbed agents.
 
 ## Layout
 
 ```text
 skills/software-factory/SKILL.md   The skill
+skills/software-factory/scripts/   Agent ledger generator
 .claude-plugin/                    Claude Code plugin files
 software-factory-map.html          Full visual walkthrough
 docs/factory-line.png              Diagram used in this README

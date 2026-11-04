@@ -1,7 +1,7 @@
 {
   "name": "blackbird",
   "description": "Software factory: turns one task into a tested feature branch and pull request, using teams of Opus, Haiku, and Sonnet agents.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "author": {
     "name": "Blackbird"
   },
