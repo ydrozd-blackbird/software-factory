@@ -7,10 +7,11 @@ copies prompts, agent output, or tool arguments into the ledger.
     python3 ledger.py --since "$(cat .factory/started-at)" --results .factory/results.json \
         --out .factory/LEDGER.html --json .factory/ledger.json
 """
-import argparse, datetime as dt, glob, html, json, os, re, sys
+import argparse, datetime as dt, glob, html, json, os, re, subprocess, sys
 
 ROLE_COLORS = {"opus": "--opus", "sonnet": "--sonnet", "haiku": "--haiku"}
 IDLE_MINUTES = 10
+FIRST_COMMIT_TARGETS = {"S": 15, "M": 30}
 
 
 def parse_time(value):
@@ -98,6 +99,29 @@ def collect(session, since):
     return sorted(rows, key=lambda r: r["start"])
 
 
+def read_sizes(path):
+    """Sizes in the order they were declared, such as ["S", "M"] after a size-up."""
+    if not path or not os.path.exists(path):
+        return []
+    return re.findall(r"^([SML]):", open(path, errors="ignore").read(), re.M)
+
+
+def first_commit_minutes(base, feature, since):
+    """Minutes from the run's start to its earliest commit, including unmerged package branches."""
+    if not (base and feature and since):
+        return None
+    done = subprocess.run(
+        ["git", "log", "--format=%ct", feature, "--branches=factory/*", "^" + base],
+        capture_output=True,
+        text=True,
+    )
+    if done.returncode:
+        return None
+    begin = parse_time(since).timestamp()
+    stamps = [int(line) for line in done.stdout.split() if int(line) >= begin]
+    return round((min(stamps) - begin) / 60, 1) if stamps else None
+
+
 def family(model):
     lowered = model.lower()
     for name in ROLE_COLORS:
@@ -165,7 +189,7 @@ def timeline(rows):
     )
 
 
-def render(rows, results, title):
+def render(rows, results, title, sizes=(), first_commit=None):
     esc = html.escape
     chart, span, skipped = timeline(rows)
     counts = {}
@@ -181,6 +205,11 @@ def render(rows, results, title):
     flat = []
     for stat in stats:
         flat.extend(stat if isinstance(stat[0], tuple) else [stat])
+    if first_commit is not None:
+        target = FIRST_COMMIT_TARGETS.get(sizes[-1]) if sizes else None
+        flat.insert(0, (f"{first_commit:.0f} min", f"to first commit (target {target})" if target else "to first commit"))
+    if sizes:
+        flat.insert(0, (" to ".join(sizes), "size"))
     tiles = "".join(f"<div><b>{esc(str(a))}</b><span>{esc(b)}</span></div>" for a, b in flat)
 
     # Agents that never replied have no model, so they can't be judged here.
@@ -266,6 +295,9 @@ def main():
     parser.add_argument("--title", default="Agent Ledger")
     parser.add_argument("--out", default=".factory/LEDGER.html")
     parser.add_argument("--json", help="Also write the rows as JSON")
+    parser.add_argument("--size-file", help="SIZE.md with lines like 'S: reason'")
+    parser.add_argument("--base", help="Base ref, used with --feature and --since to time the first commit")
+    parser.add_argument("--feature", help="Feature branch")
     args = parser.parse_args()
 
     session = find_session(args)
@@ -275,12 +307,14 @@ def main():
     results = None
     if args.results and os.path.exists(args.results):
         results = json.load(open(args.results))
+    sizes = read_sizes(args.size_file)
+    first_commit = first_commit_minutes(args.base, args.feature, args.since)
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
     with open(args.out, "w") as handle:
-        handle.write(render(rows, results, args.title))
+        handle.write(render(rows, results, args.title, sizes, first_commit))
     if args.json:
         with open(args.json, "w") as handle:
-            json.dump({"agents": rows, "packages": results}, handle, indent=1)
+            json.dump({"size": sizes, "first_commit_minutes": first_commit, "agents": rows, "packages": results}, handle, indent=1)
     print(f"{len(rows)} agents -> {args.out}")
 
 

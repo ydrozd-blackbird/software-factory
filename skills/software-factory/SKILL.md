@@ -5,7 +5,7 @@ description: Use when the user asks for the software factory, to token-max, or t
 
 # Software Factory
 
-You are the **lead**. You dispatch, pass context between teams, and verify. Product code is written by agents. These are defaults, not strict rules, so adapt them to the repo.
+You are the **lead**. You dispatch, pass context between teams, and verify. Product code is written by agents. These are defaults, not strict rules, so adapt them to the repo. This table is the full team for L work; section 2 scales it down.
 
 | Team | Model | Count | Output |
 |---|---|---|---|
@@ -22,8 +22,7 @@ You are the **lead**. You dispatch, pass context between teams, and verify. Prod
 
 1. If this isn't a git repo, run `git init` and make an empty first commit.
 2. Add `.factory/` to `.git/info/exclude`.
-3. Save the user's original request to `.factory/BRIEF.md` word for word, without summarizing or tidying it. Append their later messages about scope or requirements. Never commit it.
-4. Run `date -u +%Y-%m-%dT%H:%M:%SZ > .factory/started-at`.
+3. Run `date -u +%Y-%m-%dT%H:%M:%SZ > .factory/started-at`.
 
 **Git Flow:** run `git fetch origin` if there's a remote, then set the branch names, following any conventions the repo already uses.
 
@@ -35,18 +34,42 @@ You are the **lead**. You dispatch, pass context between teams, and verify. Prod
 
 With no remote, use the local branch as `$BASE`.
 
-## 2. Research (Opus, parallel)
+## 2. Size the work
 
-Dispatch one agent per angle, with more for large tasks. Every researcher reads `BRIEF.md` by absolute path. Each writes its findings to `.factory/research/<angle>.md` and returns a summary.
+Speed is the goal, so run the smallest factory that fits. Before dispatching any agent, spend at most 3 minutes: run `git grep -l <term> $BASE` for the components the request names, and note any new schema, route, UI, or subsystem. Ignore how long the request is. Count only existing files the change edits, not new ones. Live-data checks means testing against real third-party or production data.
+
+| Size | When | Research and spec | Build and test | Acceptance |
+|---|---|---|---|---|
+| **S** | Up to 5 existing files, no schema change, no live-data checks | None: no `BRIEF.md`, research, or `SPEC.md` | 1 Opus builder in lane 0, 1 Sonnet tester, 1 Opus critic, max 3 cycles | The tester and critic |
+| **M** | Up to 15 existing files; schema changes and live-data checks are fine | 2-3 researchers, an architect, 1 critic. `SPEC.md` is 1,500 words at most | 1-2 lanes plus lane 0, Haiku and Sonnet pairs, `MAX = 3` | 1 Opus tester |
+| **L** | More than 15 existing files, a new subsystem, or greenfield | Full research team and spec | Full loop | 2-5 Opus testers |
+
+Write the size and one reason to `.factory/SIZE.md`, as `S: <reason>`, and state both in your first reply. The user can override the size with one word, but don't wait for an answer.
+
+**On M and L,** save the user's original request to `.factory/BRIEF.md` word for word, without summarizing or tidying it. Append their later messages about scope or requirements. Never commit it.
+
+**Only size up.** Any agent that finds a migration on S, a new subsystem, or more files than the size allows must report it. Append the new size to `SIZE.md`, save `BRIEF.md` if it doesn't exist yet, keep the work done so far, and run the phases that were skipped. Size down only if the user says to.
+
+**Running S:**
+
+1. Create lane 0 with `lane.sh` (section 4), with its own database if the app uses one. There's no Environment researcher on S, so the builder checks for other shared services and follows the env safety rules.
+2. One Opus agent, labeled `solo build`, gets the user's request word for word in its prompt. It reads the code the request names, builds the change with tests, and commits to `$FEATURE`.
+3. In parallel and read-only, one Sonnet tester, labeled `solo test`, and one Opus critic, labeled `solo critic`, each return the `BUGS` schema (section 5). Both get the request word for word. The critic reviews the diff against it, looking for unsafe behavior and unproven claims.
+4. If there are blocking bugs, the same Opus agent, continued with `SendMessage` where available or restarted with the report, fixes them on `$FEATURE`, then both reviewers run again. Stop after 3 cycles and open a draft PR if anything is still blocking.
+5. Log medium and low bugs to `.factory/BUGS.md`, then continue at section 7.
+
+## 3. Research (Opus, parallel)
+
+Dispatch one agent per angle, with more for large tasks and only the angles the brief needs on M. Every researcher reads `BRIEF.md` by absolute path. Each writes its findings to `.factory/research/<angle>.md` and returns a summary.
 
 - **Code:** existing patterns, tools, and the files this touches
 - **Spec:** requirements, gaps, acceptance criteria
 - **Web:** libraries, docs, known pitfalls
 - **Security:** vulnerabilities in the proposed solution
 - **Architect:** scalability, only as far as this task needs it
-- **Environment:** capacity, shared services, and lane setup (section 3)
+- **Environment:** capacity, shared services, and lane setup (section 4)
 
-An architect then writes `.factory/SPEC.md` from the brief and the findings. 1-2 critics attack it for safety and buildability, and check that everything in the brief is either covered or explicitly out of scope. Revise once. The spec must contain:
+An architect then writes `.factory/SPEC.md` from the brief and the findings. 1-2 critics attack it for safety and buildability, and check that everything in the brief is either covered or explicitly out of scope. Revise once. On M, the one critic edits the spec directly, and there's no separate revision. The spec must contain:
 
 1. Decisions, reusing the repo's existing stack and patterns; anything new needs a stated reason
 2. Foundation: shared contracts, schema, and types, built first
@@ -56,11 +79,11 @@ An architect then writes `.factory/SPEC.md` from the brief and the findings. 1-2
 
 **Secrets:** don't stop to ask or take them in chat. List each one with where it goes, such as `.factory/secrets.env`, continue with mocks, and name what's missing in the PR.
 
-## 3. Lanes
+## 4. Lanes
 
 A lane is one git worktree with its own env, port, and database. Each pair shares a lane so the tester sees the implementer's work.
 
-**Measure capacity:** RAM and CPU (`sysctl hw.memsize hw.ncpu` and `vm_stat` on macOS, `free -h` and `nproc` on Linux), then `df -h` and `docker info`. Is the repo containerized? To measure a lane's RAM, run the app once from a temporary worktree on a spare port with its own database, then remove it. Never measure against the user's database.
+**Measure capacity (L only; S and M use the lane counts in section 2):** RAM and CPU (`sysctl hw.memsize hw.ncpu` and `vm_stat` on macOS, `free -h` and `nproc` on Linux), then `df -h` and `docker info`. Is the repo containerized? To measure a lane's RAM, run the app once from a temporary worktree on a spare port with its own database, then remove it. Never measure against the user's database.
 
 `lanes = min(available RAM / measured lane RAM, free disk / lane build cache)`
 
@@ -102,12 +125,12 @@ done
 
 **Env safety:** lanes use local or sandbox services only. `lane.sh` rewrites `PORT` and `DATABASE_URL`. Set any other shared service the Environment researcher lists, such as Redis or queues, to a lane-local value or a mock, and do the same for anything pointing at production. Also pass `PORT` on the start command, such as `npx next dev -p $PORT`. Agents never print env values.
 
-## 4. Build and test loop
+## 5. Build and test loop
 
 Create lanes 0 and 1 and run the foundation as the first wave, alone in lane 1. After it merges, migrate the `base` database from lane 0 and create the other lanes. Each lane works through a shared queue, so two packages never share a lane at once.
 
 ```js
-const MAX = 5  // 3, 5, or 10 by task size
+const MAX = 5  // 3 on M; 5 or 10 on L
 const proven = r => r.ran.app_started || r.ran.tests.passed + r.ran.tests.failed > 0
 const blocking = r => r.ran.tests.failed > 0 || r.bugs.some(b => ['critical', 'high'].includes(b.severity))
 const results = [], failed = new Set()
@@ -137,7 +160,7 @@ for (const wave of waves) {
     while (queue.length) results.push(await runPackage(queue.shift(), lane))
   }))
   const clean = results.filter(r => r.status === 'clean' && wave.some(p => p.id === r.id))
-  if (clean.length) await agent(mergePrompt(clean), { model: 'opus', label: 'merge wave', phase: 'Merge' })  // section 5
+  if (clean.length) await agent(mergePrompt(clean), { model: 'opus', label: 'merge wave', phase: 'Merge' })  // section 6
 }
 return results
 ```
@@ -158,13 +181,13 @@ git switch -q factory/<package> 2>/dev/null || git switch -qc factory/<package> 
 - **Exit:** no blocking bugs with proof that testing ran, or max cycles, whichever comes first. A report with no proof is `unverified`. `unverified` and `blocked` packages never count as clean or get merged. Packages depending on them are `blocked` too.
 - **Outages:** `agent()` returns `null` when an agent dies. Run a follow-up workflow over the `unverified` packages; each resumes on its own branch.
 
-## 5. Merge and accept
+## 6. Merge and accept
 
 **After each wave:** one Opus merger works in lane 0. It merges each `clean` package branch into `$FEATURE` one at a time, resolves conflicts against the spec, and runs the build and tests after each merge. New packages branch from the merged `$FEATURE`.
 
 **After the last wave:** Opus testers run acceptance in lane 0 in parallel, read-only, against `SPEC.md` and `BRIEF.md`. One Haiku fixer at a time commits fixes to `$FEATURE` in lane 0, under the same exit rule, and testers retest after each round.
 
-## 6. Open the pull request
+## 7. Open the pull request
 
 The factory's deliverable is a PR a developer can review. A developer merges it; the factory never does. Pushing `$FEATURE` and opening the PR need no further confirmation from the user.
 
@@ -177,7 +200,7 @@ The PR description must stand alone, because `.factory/` isn't committed. Includ
 
 If there's no remote, or the push or PR fails, keep the branch and put the reason in the report.
 
-## 7. Clean up
+## 8. Clean up
 
 Run cleanup even after a failed run, touching only what `.factory/manifest` lists (lane, path, port, database):
 
@@ -186,13 +209,15 @@ Run cleanup even after a failed run, touching only what `.factory/manifest` list
 3. Run `git -C <lane 0 path> branch -d factory/<package>` for each package. Git refuses unmerged branches; keep those and report them.
 4. Remove lane 0 last, keeping the `$FEATURE` branch.
 
-## 8. Ledger and report
+## 9. Ledger and report
 
 Generate the agent ledger, even after a failed run. The script is in this skill's base directory:
 
 ```bash
-python3 <skill base directory>/scripts/ledger.py --since "$(cat .factory/started-at)" --results .factory/results.json --title "<name> Agent Ledger" --out .factory/LEDGER.html --json .factory/ledger.json
+python3 <skill base directory>/scripts/ledger.py --since "$(cat .factory/started-at)" --results .factory/results.json --title "<name> Agent Ledger" --out .factory/LEDGER.html --json .factory/ledger.json --size-file .factory/SIZE.md --base "$BASE" --feature "$FEATURE"
 ```
+
+The ledger shows the size and the minutes from invocation to first product commit. Targets are 15 on S and 30 on M. Both size limits and targets are starting guesses, so adjust them when a repo's ledgers show they're off.
 
 If the `Artifact` tool is available, publish `.factory/LEDGER.html` as it is and share the link. It's private until the user shares it. Otherwise, give the file's path.
 
