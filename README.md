@@ -67,7 +67,7 @@ Running the skill allows the factory to push its branch and open a pull request.
 
 ## How it works
 
-The lead first sizes the work from what the brief touches in the code, not from how long the brief is. You can override the size with one word. A run can only size up, when an agent finds more than expected.
+The lead first sizes the work from what the brief touches in the code, not from how long the brief is. Research covers only the questions your brief and attached files leave open, so a detailed brief means less research. You can override the size with one word. A run can only size up, when an agent finds more than expected.
 
 | Size | Typical work | What runs |
 |---|---|---|

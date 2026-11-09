@@ -9,7 +9,7 @@ You are the **lead**. You dispatch, pass context between teams, and verify. Prod
 
 | Team | Model | Count | Output |
 |---|---|---|---|
-| Research | `opus` | 5-20 | `SPEC.md` |
+| Research | `opus` | one per open question, up to about 20 | `SPEC.md` |
 | Implement | `haiku` | one per package and fix attempt, ideally 100+ over the run | commits on package branches |
 | Test | `sonnet` (`opus` when depth beats turnaround) | paired 1:1 with implementers | severity-rated reports with proof |
 | Merge + accept | `opus` to merge and judge, `haiku` to fix | 1 merger per wave, 2-5 testers | a feature branch and a PR for developer review |
@@ -48,13 +48,17 @@ With no remote, use the local branch as `$BASE`.
 
 ## 2. Size the work
 
-Speed is the goal, so run the smallest factory that fits. Before dispatching any agent, spend at most 3 minutes: run `git grep -l <term> $BASE` for the components the request names, and note any new schema, route, UI, or subsystem. Ignore how long the request is. Count only existing files the change edits, not new ones. Live-data checks means testing against real third-party or production data.
+Speed is the goal, so run the smallest factory that fits. Before dispatching any agent, spend at most 3 minutes: run `git grep -l <term> $BASE` for the components the request names, and note any new schema, route, UI, or subsystem. A subsystem means a new service, an external integration, or a cross-cutting area such as auth, billing, or sync; a new page, form, model, or report inside the existing app isn't one. Read any files, examples, or data the user attached, because they count as spec. Ignore how long the request is. Count only existing files the change edits, not new ones. Live-data checks means testing against real third-party or production systems; using the user's sample files as test fixtures isn't one.
 
 | Size | When | Research and spec | Build and test | Acceptance |
 |---|---|---|---|---|
 | **S** | Up to 5 existing files, no schema change, no live-data checks | None: no `BRIEF.md`, research, or `SPEC.md` | 1 Opus builder in lane 0, 1 Sonnet tester, 1 Opus critic, max 3 cycles | The tester and critic |
-| **M** | Up to 15 existing files; schema changes and live-data checks are fine | 2-3 researchers, an architect, 1 critic. `SPEC.md` is 1,500 words at most | 1-2 lanes plus lane 0, Haiku and Sonnet pairs, `MAX = 3` | 1 Opus tester |
-| **L** | More than 15 existing files, a new subsystem, or greenfield | Full research team and spec | Full loop | 2-5 Opus testers |
+| **M** | Up to 15 existing files; schema changes and live-data checks are fine | One researcher per angle with open questions, up to 3; an architect; 1 critic. `SPEC.md` is 1,500 words at most | 1-2 lanes plus lane 0, Haiku and Sonnet pairs, `MAX = 3` | 1 Opus tester |
+| **L** | More than 15 existing files, a new subsystem, or greenfield | Researchers for open questions, and the full spec | Full loop | 2-5 Opus testers |
+
+**Open questions:** list the questions that the request and its attached files don't answer. Anything the user's files or examples answer is closed. A question only the user can answer, such as a business rule, numbering scheme, or preference, goes to the user as a decision with a default (see Keep the user in the loop), not to research. Research covers only the open questions that remain; with two or fewer, dispatch no researchers, and the architect reads the files, answers them, and writes the spec. Put the list in your first reply.
+
+The table is a starting point, not a checklist. If the work is clearly simpler than its row suggests, choose the smaller size and say why.
 
 Write the size and one reason to `.factory/SIZE.md`, as `S: <reason>`, and state both in your first reply. The user can override the size with one word, but don't wait for an answer.
 
@@ -72,14 +76,14 @@ Write the size and one reason to `.factory/SIZE.md`, as `S: <reason>`, and state
 
 ## 3. Research (Opus, parallel)
 
-Dispatch one agent per angle, with more for large tasks and only the angles the brief needs on M. Every researcher reads `BRIEF.md` by absolute path. Each writes its findings to `.factory/research/<angle>.md` and returns a summary.
+Dispatch one agent per angle below that has open questions from section 2, labeled `research <angle>`, and skip the rest. The spec writer is labeled `architect` and critics `critic`. Every researcher reads `BRIEF.md` and the user's files by absolute path. Each writes at most 800 words to `.factory/research/<angle>.md`: findings and decisions with sources, not a survey. It returns a summary.
 
 - **Code:** existing patterns, tools, and the files this touches
 - **Spec:** requirements, gaps, acceptance criteria
 - **Web:** libraries, docs, known pitfalls
 - **Security:** vulnerabilities in the proposed solution
 - **Architect:** scalability, only as far as this task needs it
-- **Environment:** capacity, shared services, and lane setup (section 4)
+- **Environment:** capacity, shared services, and lane setup (section 4); on L, always run this one
 
 An architect then writes `.factory/SPEC.md` from the brief and the findings. 1-2 critics attack it for safety and buildability, and check that everything in the brief is either covered or explicitly out of scope. Revise once. On M, the one critic edits the spec directly, and there's no separate revision. Don't wait for the critics: once the architect's draft exists, create lanes 0 and 1 and start the foundation build (section 5). Critics run alongside it and only change later waves. The spec must contain:
 
