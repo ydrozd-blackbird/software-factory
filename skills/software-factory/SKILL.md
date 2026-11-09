@@ -1,6 +1,6 @@
 ---
 name: software-factory
-description: Use when the user asks for the software factory, to token-max, or to throw a team of agents at a feature, bug fix, or greenfield build where speed matters more than token cost.
+description: Use when the user asks for the software factory, to token-max, or to throw a team of agents at a feature, bug fix, or greenfield build where speed matters more than token cost. Also use when the user says resume, continue, or where were we while `.factory/run.json` shows an unfinished run.
 ---
 
 # Software Factory
@@ -16,13 +16,25 @@ You are the **lead**. You dispatch, pass context between teams, and verify. Prod
 
 **Set `model` on every `agent()` call.** Omitted means it inherits the session's model, so builders can silently run on Opus. Use `Workflow` for loops and fan-out, and load `workflow-authoring` before writing the script. If `Workflow` isn't available, run the same phases with background `Agent` calls and set `model` on each.
 
-**Every lane prompt starts with:** "`cd <lane>` and run `git rev-parse --show-toplevel`. If it doesn't print `<lane>`, stop and report it." Agents start in the user's checkout, so this keeps them out of it.
+**Every lane prompt starts with:** "`cd <lane>` and run `git rev-parse --show-toplevel`. If it doesn't print `<lane>`, stop and report it." Agents start in the user's checkout, so this keeps them out of it. **Every agent prompt ends with:** "Before each step, read `<repo>/.factory/STEER.md`. Its entries override the spec."
+
+## Keep the user in the loop
+
+**TL;DR:** at most six lines: the size and why; what's being built, on which branch; packages, waves, and lanes; what's running now and when it should finish; decisions waiting, each with its default; and "Reply with a change at any time." Post it in your first reply, after the spec, whenever a workflow returns, and whenever the user asks for status.
+
+**Steering:** save every later message from the user to `BRIEF.md`, replacing any secret in it with `<secret: NAME>` and moving the value to `.secrets.env` (section 3). If it changes the work, add a numbered, timestamped entry to `.factory/STEER.md` with its scope (`spec`, `package <id>`, or `wave <n>`), and edit `SPEC.md` and `packages.json` to match. Tell the user when it takes effect. Queued packages and running agents pick it up from `STEER.md` at their next step. Don't stop the workflow: list packages already built against the old plan as `stale` in `STEER.md`, and rebuild them on their own branches in a follow-up workflow. On S, send corrections straight to the builder.
+
+**Decisions:** when the factory needs the user, such as a tester's `decision` or a missing secret, ask at once with a safe default, record it in `STEER.md` as `pending`, and keep other packages running. Asking ends your turn, so first start a `Monitor` that wakes you in 30 minutes. If there's no answer by then, apply the default and record it. A default that changes the package reruns it. A default never waives a safety rule or a `CLAUDE.md` rule; it leaves that package and its dependents out and says so in the PR.
 
 ## 1. Start
 
 1. If this isn't a git repo, run `git init` and make an empty first commit.
 2. Add `.factory/` to `.git/info/exclude`.
-3. Run `date -u +%Y-%m-%dT%H:%M:%SZ > .factory/started-at`.
+3. If `.factory/run.json` exists and its `phase` isn't `complete`, this is a resume: go to section 10. Otherwise write `run.json` with `started` (from `date -u +%Y-%m-%dT%H:%M:%SZ`), `feature`, `base`, and `phase: "start"`.
+
+Update `run.json` at every phase change (`start`, `research`, `build`, `accept`, `pr`, `cleanup`, `complete`) and whenever a workflow starts or returns: set `phase` and `updated`, and keep a `workflows` list of `{runId, scriptPath, state}`, plus `pr`, `pending` decisions, the lane count, and `services`: the `base` database and any containers the factory started.
+
+**`.factory/` layout:** the lead writes `run.json`, `SIZE.md`, `BRIEF.md`, `STEER.md`, `BUGS.md`, `results.jsonl`, and the ledger. The architect writes `SPEC.md` and `packages.json`, and researchers write `research/`. `lane.sh` writes `manifest`, and agents put scratch output and evidence in `tmp/`. Cleanup deletes `manifest` and `tmp/` and keeps the rest. Secrets never go in `.factory/` (section 3).
 
 **Git Flow:** run `git fetch origin` if there's a remote, then set the branch names, following any conventions the repo already uses.
 
@@ -69,15 +81,15 @@ Dispatch one agent per angle, with more for large tasks and only the angles the 
 - **Architect:** scalability, only as far as this task needs it
 - **Environment:** capacity, shared services, and lane setup (section 4)
 
-An architect then writes `.factory/SPEC.md` from the brief and the findings. 1-2 critics attack it for safety and buildability, and check that everything in the brief is either covered or explicitly out of scope. Revise once. On M, the one critic edits the spec directly, and there's no separate revision. The spec must contain:
+An architect then writes `.factory/SPEC.md` from the brief and the findings. 1-2 critics attack it for safety and buildability, and check that everything in the brief is either covered or explicitly out of scope. Revise once. On M, the one critic edits the spec directly, and there's no separate revision. Don't wait for the critics: once the architect's draft exists, create lanes 0 and 1 and start the foundation build (section 5). Critics run alongside it and only change later waves. The spec must contain:
 
 1. Decisions, reusing the repo's existing stack and patterns; anything new needs a stated reason
 2. Foundation: shared contracts, schema, and types, built first
-3. Work packages small enough for Haiku: id, exact files owned, no file in two parallel packages, dependency waves, `deps`, and done-checks
+3. Work packages small enough for Haiku: id, exact files owned, no file in two parallel packages, dependency waves, `deps`, and done-checks. Also write them to `.factory/packages.json` as `{"waves": [[package, ...], ...]}`; the build workflow takes this as its `args`
 4. Lane plan: count, ports, databases, mocks, and any other shared service each lane must not touch
 5. Secrets needed, and the mock to use until they exist
 
-**Secrets:** don't stop to ask or take them in chat. List each one with where it goes, such as `.factory/secrets.env`, continue with mocks, and name what's missing in the PR.
+**Secrets:** don't stop to ask or take them in chat. List each one in the spec. They go in `<repo>-lanes/.secrets.env` with mode 600, never in `.factory/`, and cleanup deletes the file. A `DB_URL` with a password goes there too. Agents load it with `set -a; . <file>; set +a` and never print it. Continue with mocks, and name what's missing in the PR.
 
 ## 4. Lanes
 
@@ -127,7 +139,7 @@ done
 
 ## 5. Build and test loop
 
-Create lanes 0 and 1 and run the foundation as the first wave, alone in lane 1. After it merges, migrate the `base` database from lane 0 and create the other lanes. Each lane works through a shared queue, so two packages never share a lane at once.
+Create lanes 0 and 1 and run the foundation as the first wave, alone in lane 1. After it merges, migrate the `base` database from lane 0 and create the other lanes. Each lane works through a shared queue, so two packages never share a lane at once. `waves` comes from `packages.json` through the workflow's `args`.
 
 ```js
 const MAX = 5  // 3 on M; 5 or 10 on L
@@ -146,9 +158,10 @@ const runPackage = async (p, lane) => {
     cycle++
     const built = await agent(buildPrompt(p, lane, reports.at(-1)), { model: 'haiku', label: `${p.id} build ${cycle}`, phase: 'Build' })
     if (built === null) return finish('unverified')
-    const report = await agent(testPrompt(p, lane), { model: 'sonnet', schema: BUGS, label: `${p.id} test ${cycle}`, phase: 'Test' })
+    const report = await agent(testPrompt(p, lane, reports.at(-1)), { model: 'sonnet', schema: BUGS, label: `${p.id} test ${cycle}`, phase: 'Test' })
     if (!report) return finish('unverified')
     reports.push(report)
+    if (report.bugs.some(b => b.decision)) return finish('needs-decision')
     if (blocking(report)) continue
     return finish(proven(report) ? 'clean' : 'unverified')
   }
@@ -165,7 +178,7 @@ for (const wave of waves) {
 return results
 ```
 
-After each run, write the returned results to `.factory/results.json`, adding to any earlier runs. Write every medium and low bug from every report to `.factory/BUGS.md`.
+When a workflow returns, append one line per result to `.factory/results.jsonl` with its `runId`. The latest line for a package wins, so re-runs never need new files. Write every medium and low bug from every report to `.factory/BUGS.md`.
 
 **Package start.** On the first cycle, the implementer runs this, then resets the lane's own database and runs migrations and codegen:
 
@@ -174,18 +187,20 @@ git add -u; git diff --cached --quiet || git commit -qm "wip: interrupted"
 git switch -q factory/<package> 2>/dev/null || git switch -qc factory/<package> "$FEATURE"
 ```
 
-- **Implementer prompt:** absolute paths to `SPEC.md` and the lane, the package text, owned files, the done-check, the tester's last report, and "write tests for your package; commit only your files on the package branch."
-- **Tester prompt:** absolute lane path, port, acceptance criteria, and "restart the app on the latest commit, run the tests and drive the feature, reproduce each bug twice, cite evidence, do not edit code. Report every command you ran. If the app won't start or tests can't run, report that as a critical bug."
-- **`BUGS` schema:** `{ran: {app_started, commands: [], tests: {passed, failed, skipped}}, bugs: [{title, severity: critical|high|medium|low, repro, expected, actual, evidence, files}]}`
+- **Implementer prompt:** absolute paths to `SPEC.md` and the lane, the package text, owned files, the done-check, the tester's last report, and "write tests for your package; commit only your files on the package branch. Finish within 20 minutes. Never wait more than 10 minutes on one command: run it in the background with its output in `.factory/tmp/`, commit what you have, and say what's still running. Commit after each working step, since an outage loses anything uncommitted."
+- **Tester prompt:** absolute lane path, port, acceptance criteria, and "restart the app on the latest commit, run the tests and drive the feature, reproduce each bug twice, cite evidence, do not edit code. Report every command you ran. If the app won't start or tests can't run, report that as a critical bug. Report within 5 minutes of the done-check passing, and drive the UI at most twice. If a blocking bug from the last report is still there, or fixing it needs a `CLAUDE.md` rule changed, a safety test removed, or work outside the package, set `decision` on that bug to a question for the user with a safe default."
+- **`BUGS` schema:** `{ran: {app_started, commands: [], tests: {passed, failed, skipped}}, bugs: [{title, severity: critical|high|medium|low, repro, expected, actual, evidence, files, decision?}]}`
 - **Severity:** Haiku fixes critical and high bugs and failing tests. Medium and low bugs are logged, not fixed.
-- **Exit:** no blocking bugs with proof that testing ran, or max cycles, whichever comes first. A report with no proof is `unverified`. `unverified` and `blocked` packages never count as clean or get merged. Packages depending on them are `blocked` too.
-- **Outages:** `agent()` returns `null` when an agent dies. Run a follow-up workflow over the `unverified` packages; each resumes on its own branch.
+- **Exit:** no blocking bugs with proof that testing ran, or max cycles, whichever comes first. A report with no proof is `unverified`. `unverified`, `needs-decision`, and `blocked` packages never count as clean or get merged. Packages depending on them are `blocked` too.
+- **Hung agents and outages:** `agent()` returns `null` only after the API gives up, which has taken 48-141 minutes in a network outage. While a workflow runs, check every 15 minutes with `Monitor`. Transcripts are in `~/.claude/projects/<cwd with each non-alphanumeric as ->/<session id>/subagents/workflows/<runId>/`: one `agent-*.jsonl` per agent, and `journal.jsonl` with one JSON line per agent start and result. An agent whose transcript hasn't changed in 15 minutes is hung, so `TaskStop` the workflow and relaunch it with `resumeFromRunId`. Finished agents come back from cache, and only running ones restart. The same check reads new test results in `journal.jsonl` and asks the user about any `decision` right away. Afterwards, run a follow-up workflow over `unverified` and answered `needs-decision` packages; each resumes on its own branch.
 
 ## 6. Merge and accept
 
 **After each wave:** one Opus merger works in lane 0. It merges each `clean` package branch into `$FEATURE` one at a time, resolves conflicts against the spec, and runs the build and tests after each merge. New packages branch from the merged `$FEATURE`.
 
 **After the last wave:** Opus testers run acceptance in lane 0 in parallel, read-only, against `SPEC.md` and `BRIEF.md`. One Haiku fixer at a time commits fixes to `$FEATURE` in lane 0, under the same exit rule, and testers retest after each round.
+
+Integration and acceptance never run as one long agent. Split the checks into packages of about 20 minutes, run them in parallel across idle lanes, and run anything longer, such as load tests, as a background command that a fresh tester reads back.
 
 ## 7. Open the pull request
 
@@ -202,23 +217,33 @@ If there's no remote, or the push or PR fails, keep the branch and put the reaso
 
 ## 8. Clean up
 
-Run cleanup even after a failed run, touching only what `.factory/manifest` lists (lane, path, port, database):
+Run cleanup once the PR is open, or when the run stops for good, but not while it's paused for a decision or an outage. Touch only what `.factory/manifest` lists (lane, path, port, database) and the `services` in `run.json`:
 
-1. Stop lane servers with `lsof -ti tcp:<port> | xargs kill`, then drop lane databases and any containers the factory started.
-2. For lanes 1 and up, run `git worktree remove <path>`. If it refuses, inspect the worktree, keep it, and report it.
+1. Stop lane servers with `lsof -ti tcp:<port> | xargs kill`, then drop the lane databases, the `base` database, and the containers listed in `services`.
+2. For lanes 1 and up, delete the lane's `.env` copies, then run `git worktree remove <path>`. If it refuses, inspect the worktree, keep it, and report it.
 3. Run `git -C <lane 0 path> branch -d factory/<package>` for each package. Git refuses unmerged branches; keep those and report them.
-4. Remove lane 0 last, keeping the `$FEATURE` branch.
+4. Remove lane 0 the same way, last, keeping the `$FEATURE` branch.
+5. Delete `<repo>-lanes/.secrets.env`, remove the `<repo>-lanes/` folder if it's empty, then delete `.factory/tmp/` and `.factory/manifest`.
 
 ## 9. Ledger and report
 
 Generate the agent ledger, even after a failed run. The script is in this skill's base directory:
 
 ```bash
-python3 <skill base directory>/scripts/ledger.py --since "$(cat .factory/started-at)" --results .factory/results.json --title "<name> Agent Ledger" --out .factory/LEDGER.html --json .factory/ledger.json --size-file .factory/SIZE.md --base "$BASE" --feature "$FEATURE"
+python3 <skill base directory>/scripts/ledger.py --factory .factory --title "<name> Agent Ledger"
 ```
 
 The ledger shows the size and the minutes from invocation to first product commit. Targets are 15 on S and 30 on M. Both size limits and targets are starting guesses, so adjust them when a repo's ledgers show they're off.
 
 If the `Artifact` tool is available, publish `.factory/LEDGER.html` as it is and share the link. It's private until the user shares it. Otherwise, give the file's path.
 
-**Report:** the PR link, the ledger link, what was built, verification evidence, open medium and low bugs, anything `blocked` or `unverified`, and secrets still needed.
+**Report:** the PR link, the ledger link, what was built, verification evidence, open medium and low bugs, anything `blocked`, `unverified`, or `needs-decision`, and secrets still needed. Then set `phase` to `complete` in `run.json`. A run is complete when the PR is open, or the branch is kept with a stated reason, and cleanup and the ledger are done.
+
+## 10. Resume
+
+Resume on `/blackbird:software-factory resume`, when the user says resume or continue, or whenever the skill starts and `run.json` shows a `phase` other than `complete`. The plugin's start-up hook tells you when a session opens in a repo with an unfinished run. Post a TL;DR of where the run stopped, then:
+
+1. Read `run.json`, `results.jsonl`, and `STEER.md`. Run `git for-each-ref refs/heads/factory/` and `git log $BASE..$FEATURE` to see which packages are committed and merged.
+2. Run `git worktree prune`, then recreate the lanes in `manifest` with `lane.sh`, taking `DB_URL` from `.secrets.env`. Work that wasn't committed in a lost lane is gone.
+3. In the same session, relaunch the last workflow with `resumeFromRunId`. In a new session, start the build workflow with only the waves and packages that aren't `clean` as its `args`, leaving `packages.json` as it is. A package that already has a branch continues on it, because the package-start commands switch to the existing branch.
+4. Update `run.json` before dispatching anything.

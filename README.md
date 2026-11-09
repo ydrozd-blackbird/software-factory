@@ -10,12 +10,20 @@ The diagram shows a large run; small and medium runs use fewer stages. For the f
 
 ## Install
 
-Run these two commands inside Claude Code:
+Paste this into your terminal:
+
+```bash
+claude plugin install blackbird --marketplace ydrozd-blackbird/software-factory
+```
+
+This needs Claude Code 2.1.292 or later; check with `claude --version`. On older versions, or from inside a Claude Code session, run these two commands instead:
 
 ```text
 /plugin marketplace add ydrozd-blackbird/software-factory
 /plugin install blackbird@blackbird-lab
 ```
+
+Restart Claude Code after installing.
 
 To open pull requests, the factory also needs `gh` or `glab` signed in.
 
@@ -78,9 +86,17 @@ The stages of a full run:
 
 The session you talk to is the lead. It dispatches agents, passes context between teams, and verifies results, but writes no product code.
 
+## While it runs
+
+- **Status:** the lead posts a short TL;DR of the plan when it starts, after the spec, and whenever a stage finishes. Ask "where are we?" at any time to get a new one.
+- **Corrections:** reply with a change at any time. Packages that haven't started pick it up right away, and the lead restarts any package the change affects.
+- **Decisions:** if an agent needs a call only you can make, the lead asks with a safe default and keeps the other work going. If you don't answer within 30 minutes, it uses the default, which never waives a safety rule.
+- **Interruptions:** if the network drops or the session ends, open Claude Code in the repo again. A start-up hook spots the unfinished run and Claude offers to continue it, so just say "resume". `claude --continue` reopens the original session, which is fastest because finished agents come back from cache. The run's status is kept in `.factory/run.json`, and finished packages aren't redone.
+
 ## What you get
 
 - **A pull request** whose description stands alone: what changed, how it was tested, and any open bugs. It's a draft if anything couldn't be verified.
+- **A tidy `.factory/` folder**, kept out of git, with the brief, spec, results, and status. The factory deletes its worktrees, scratch files, and secrets file when it finishes.
 - **An agent ledger**, published as a private Claude artifact where that's available and saved to `.factory/LEDGER.html` either way. It shows every agent's model, timing, tokens, and tool calls from Claude Code's own records, along with the size, the minutes to first commit, and each package's outcome. It never includes prompts or agent output.
 
 ## Before you run it
@@ -95,6 +111,7 @@ The session you talk to is the lead. It dispatches agents, passes context betwee
 ```text
 skills/software-factory/SKILL.md   The skill
 skills/software-factory/scripts/   Agent ledger generator
+hooks/                             Start-up hook that reports unfinished runs
 .claude-plugin/                    Claude Code plugin files
 software-factory-map.html          Full visual walkthrough
 docs/factory-line.png              Diagram used in this README

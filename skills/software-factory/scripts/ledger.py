@@ -4,8 +4,7 @@
 Reads only labels, models, timings, token counts, and tool-call counts. It never
 copies prompts, agent output, or tool arguments into the ledger.
 
-    python3 ledger.py --since "$(cat .factory/started-at)" --results .factory/results.json \
-        --out .factory/LEDGER.html --json .factory/ledger.json
+    python3 ledger.py --factory .factory --title "Agent Ledger"
 """
 import argparse, datetime as dt, glob, html, json, os, re, subprocess, sys
 
@@ -104,6 +103,25 @@ def read_sizes(path):
     if not path or not os.path.exists(path):
         return []
     return re.findall(r"^([SML]):", open(path, errors="ignore").read(), re.M)
+
+
+def read_results(path):
+    """A JSON list, or JSON lines where the latest line for each package wins."""
+    if not path or not os.path.exists(path):
+        return None
+    text = open(path, errors="ignore").read()
+    if not path.endswith(".jsonl"):
+        return json.loads(text)
+    latest = {}
+    for line in text.splitlines():
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict):
+            latest.pop(row.get("id"), None)
+            latest[row.get("id")] = row
+    return list(latest.values())
 
 
 def first_commit_minutes(base, feature, since):
@@ -271,7 +289,7 @@ svg text{{fill:var(--muted);font-size:11px}}svg .lane{{fill:var(--fg);font-size:
 table{{border-collapse:collapse;width:100%;font-size:13px;min-width:700px}}th,td{{padding:7px 11px;text-align:left;border-bottom:1px solid var(--line)}}th{{font-size:12px;color:var(--muted)}}
 .n{{text-align:right;font-variant-numeric:tabular-nums}}.t{{font-variant-numeric:tabular-nums;white-space:nowrap}}
 .p-opus{{color:var(--opus)}}.p-haiku{{color:var(--haiku)}}.p-sonnet{{color:var(--sonnet)}}.p-other{{color:var(--other)}}
-.s-clean{{color:var(--ok);font-weight:600}}.s-blocked,.s-unverified{{color:var(--bad);font-weight:600}}
+.s-clean{{color:var(--ok);font-weight:600}}.s-blocked,.s-unverified,.s-needs-decision{{color:var(--bad);font-weight:600}}
 </style>
 <div class="wrap">
 <header><h1>{esc(title)}</h1><p>Started {day} at {esc(rows[0]["start"][11:16])} UTC. Taken from the agents' own records; the lead session isn't counted.</p></header>
@@ -288,25 +306,38 @@ table{{border-collapse:collapse;width:100%;font-size:13px;min-width:700px}}th,td
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--factory", help="A .factory folder: fills --since, --base, --feature, --size-file, --results, --out, and --json")
     parser.add_argument("--session-dir", help="Session folder; defaults to the newest session for this directory")
     parser.add_argument("--session-id", help="Session id, when several sessions share this directory")
     parser.add_argument("--since", help="ISO time; ignore agents that started earlier")
     parser.add_argument("--results", help="JSON list of package results from the build loop")
     parser.add_argument("--title", default="Agent Ledger")
-    parser.add_argument("--out", default=".factory/LEDGER.html")
+    parser.add_argument("--out")
     parser.add_argument("--json", help="Also write the rows as JSON")
     parser.add_argument("--size-file", help="SIZE.md with lines like 'S: reason'")
     parser.add_argument("--base", help="Base ref, used with --feature and --since to time the first commit")
     parser.add_argument("--feature", help="Feature branch")
     args = parser.parse_args()
+    if args.factory:
+        run = {}
+        try:
+            run = json.load(open(os.path.join(args.factory, "run.json")))
+        except (OSError, ValueError):
+            pass
+        args.since = args.since or run.get("started")
+        args.base = args.base or run.get("base")
+        args.feature = args.feature or run.get("feature")
+        args.size_file = args.size_file or os.path.join(args.factory, "SIZE.md")
+        args.results = args.results or os.path.join(args.factory, "results.jsonl")
+        args.out = args.out or os.path.join(args.factory, "LEDGER.html")
+        args.json = args.json or os.path.join(args.factory, "ledger.json")
+    args.out = args.out or ".factory/LEDGER.html"
 
     session = find_session(args)
     rows = collect(session, args.since)
     if not rows:
         sys.exit(f"No agents found in {session}" + (f" since {args.since}" if args.since else ""))
-    results = None
-    if args.results and os.path.exists(args.results):
-        results = json.load(open(args.results))
+    results = read_results(args.results)
     sizes = read_sizes(args.size_file)
     first_commit = first_commit_minutes(args.base, args.feature, args.since)
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
