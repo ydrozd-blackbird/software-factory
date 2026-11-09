@@ -16,7 +16,7 @@ You are the **lead**. You dispatch, pass context between teams, and verify. Prod
 
 **Set `model` on every `agent()` call.** Omitted means it inherits the session's model, so builders can silently run on Opus. Use `Workflow` for loops and fan-out, and load `workflow-authoring` before writing the script. If `Workflow` isn't available, run the same phases with background `Agent` calls and set `model` on each.
 
-**Every lane prompt starts with:** "`cd <lane>` and run `git rev-parse --show-toplevel`. If it doesn't print `<lane>`, stop and report it." Agents start in the user's checkout, so this keeps them out of it. **Every agent prompt ends with:** "Before each step, read `<repo>/.factory/STEER.md`. Its entries override the spec."
+**Every lane prompt starts with:** "`cd <lane>` and run `git rev-parse --show-toplevel`. If it doesn't print `<lane>`, stop and report it." Agents start in the user's checkout, so this keeps them out of it. **Every agent prompt ends with:** "Before each step, read `<repo>/.factory/STEER.md`. Its entries override the spec. Keep each shell command to one simple line. Put anything longer, or anything with nested quotes, `$(...)`, or JSON, in a script under `<repo>/.factory/tmp/` and run it with `bash <path>`. Send JSON request bodies from files with `curl -d @<file>`." Claude Code asks before running a command it can't parse, even in permissive modes, and that prompt stalls the agent until the user answers.
 
 ## Keep the user in the loop
 
@@ -31,6 +31,17 @@ You are the **lead**. You dispatch, pass context between teams, and verify. Prod
 1. If this isn't a git repo, run `git init` and make an empty first commit.
 2. Add `.factory/` to `.git/info/exclude`.
 3. If `.factory/run.json` exists and its `phase` isn't `complete`, this is a resume: go to section 10. Otherwise write `run.json` with `started` (from `date -u +%Y-%m-%dT%H:%M:%SZ`), `feature`, `base`, and `phase: "start"`.
+
+**Pre-flight:** agents work in `<repo>-lanes/`, outside the folder the session opened in, so their edits there can prompt too. Check `.claude/settings.local.json` and `~/.claude/settings.json`. If the lanes folder isn't an allowed directory, ask the user once in your first reply to add this to `.claude/settings.local.json`, with real absolute paths and the repo's package manager. Never edit permission settings yourself. Start research while you wait, since it only reads the repo and writes to `.factory/`.
+
+```json
+{
+  "permissions": {
+    "additionalDirectories": ["/abs/path/<repo>-lanes"],
+    "allow": ["Bash(bash /abs/path/<repo>/.factory/tmp/:*)", "Bash(git:*)", "Bash(npm:*)", "Bash(npx:*)"]
+  }
+}
+```
 
 Update `run.json` at every phase change (`start`, `research`, `build`, `accept`, `pr`, `cleanup`, `complete`) and whenever a workflow starts or returns: set `phase` and `updated`, and keep a `workflows` list of `{runId, scriptPath, state}`, plus `pr`, `pending` decisions, the lane count, and `services`: the `base` database and any containers the factory started.
 

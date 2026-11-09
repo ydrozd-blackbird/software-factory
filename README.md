@@ -102,7 +102,16 @@ The session you talk to is the lead. It dispatches agents, passes context betwee
 ## Before you run it
 
 - **Cost:** a large run can use hundreds of agents. Use it when speed matters more than token cost. The size limits are starting guesses, so check the ledger to see how they fit your repo.
-- **Permissions:** to run unattended, pre-approve the commands it needs, such as `git`, `docker`, your database tools, and `gh` or `glab`. Otherwise the first permission prompt pauses the run until you answer.
+- **Permissions:** any permission prompt from an agent pauses that agent until you answer. Agents put complex shell commands in script files to avoid Claude Code's prompts for commands it can't parse. To run unattended, also add the lanes folder and the common commands to `.claude/settings.local.json` in your repo, using real absolute paths and your package manager. The factory asks you to do this at the start if it's missing.
+
+  ```json
+  {
+    "permissions": {
+      "additionalDirectories": ["/abs/path/<repo>-lanes"],
+      "allow": ["Bash(bash /abs/path/<repo>/.factory/tmp/:*)", "Bash(git:*)", "Bash(npm:*)", "Bash(npx:*)", "Bash(gh:*)"]
+    }
+  }
+  ```
 - **Machine:** the factory measures RAM, CPU, and disk to choose how many lanes to run, and it mocks what it can to fit more.
 - **Status:** this is an early release with little real-world use. The worktree script, git steps, and agent loop have been checked in a throwaway repo with stubbed agents.
 
