@@ -4,7 +4,7 @@ A Claude Code skill that turns one task into a tested feature branch and a pull 
 
 Built at [Blackbird](https://blackbird-lab.com) and shared for anyone who wants to use it.
 
-![The factory line: research produces a spec, builder and tester pairs build and test in parallel lanes, a merger integrates each wave, then acceptance, a pull request, and cleanup](docs/factory-line.png)
+![The factory line: Sonnet and Opus research, a Fable architect writes the spec, builders that start on Haiku and move up to Sonnet pair with Sonnet testers in parallel lanes, a merger integrates each wave, then acceptance, a pull request, and cleanup](docs/factory-line.png)
 
 The diagram shows a large run; small and medium runs use fewer stages. For the full walkthrough, including the build and test loop and per-lane resources, download [`software-factory-map.html`](software-factory-map.html) and open it in a browser.
 
