@@ -4,7 +4,7 @@ A Claude Code skill that turns one task into a tested feature branch and a pull 
 
 Built at [Blackbird](https://blackbird-lab.com) and shared for anyone who wants to use it.
 
-![The factory line: Opus research produces a spec, Haiku and Sonnet pairs build and test in parallel lanes, a merger integrates each wave, then acceptance, a pull request, and cleanup](docs/factory-line.png)
+![The factory line: research produces a spec, builder and tester pairs build and test in parallel lanes, a merger integrates each wave, then acceptance, a pull request, and cleanup](docs/factory-line.png)
 
 The diagram shows a large run; small and medium runs use fewer stages. For the full walkthrough, including the build and test loop and per-lane resources, download [`software-factory-map.html`](software-factory-map.html) and open it in a browser.
 
@@ -79,10 +79,12 @@ The stages of a full run:
 
 | Stage | Who | What happens |
 |---|---|---|
-| Research | Opus | Agents cover code, spec, web, security, architecture, and machine capacity. An architect and critics turn the findings into `SPEC.md`. |
-| Build and test | Haiku + Sonnet | Pairs work in separate git worktrees, usually each with its own port and database. Haiku fixes critical and high bugs until none remain or the cycle limit is reached. Medium and low bugs are logged. |
-| Merge and accept | Opus + Haiku | A merger integrates each wave. Opus then tests against the spec and Haiku fixes what it finds. |
+| Research | Sonnet + Opus, then Fable | Sonnet covers code, web, and machine capacity; Opus covers spec, security, and architecture. A Fable architect and critics turn the findings into `SPEC.md` (Opus on medium runs). |
+| Build and test | Haiku or Sonnet + Sonnet | Pairs work in separate git worktrees, usually each with its own port and database. The builder fixes critical and high bugs until none remain or the cycle limit is reached, moving up from Haiku to Sonnet, and then to higher effort, if a package keeps failing. Medium and low bugs are logged. |
+| Merge and accept | Opus + Sonnet | A merger integrates each wave. Opus then tests against the spec and Sonnet fixes what it finds. |
 | Ship | Lead session | The work goes up as `feature/`, `bugfix/`, or `hotfix/` with a pull request, following Git Flow. The factory then removes its worktrees and publishes an agent ledger. |
+
+Every agent runs with an explicit model and effort level, so nothing silently inherits your session's model. Builders start on Haiku by default. To build on Sonnet from the first cycle, say "use sonnet workers" in your request; it costs more per package but fails less often. On Bedrock, Google Cloud, Microsoft Foundry, or Claude Platform on AWS, `haiku` still means Haiku 4.5, so Sonnet workers are the better choice there.
 
 The session you talk to is the lead. It dispatches agents, passes context between teams, and verifies results, but writes no product code.
 
@@ -97,7 +99,7 @@ The session you talk to is the lead. It dispatches agents, passes context betwee
 
 - **A pull request** whose description stands alone: what changed, how it was tested, and any open bugs. It's a draft if anything couldn't be verified.
 - **A tidy `.factory/` folder**, kept out of git, with the brief, spec, results, and status. The factory deletes its worktrees, scratch files, and secrets file when it finishes.
-- **An agent ledger**, published as a private Claude artifact where that's available and saved to `.factory/LEDGER.html` either way. It shows every agent's model, timing, tokens, and tool calls from Claude Code's own records, along with the size, the minutes to first commit, and each package's outcome. It never includes prompts or agent output.
+- **An agent ledger**, published as a private Claude artifact where that's available and saved to `.factory/LEDGER.html` either way. It opens with a TL;DR you can share: a plain-language summary of the work, its size against the S/M/L scale, the files, lines, and commits it changed, the areas of the code touched, and the PR link. Below that it shows every agent's model, timing, tokens, tool calls, and estimated cost at API list prices from Claude Code's own records, along with the size, the minutes to first commit, cost by phase, and each package's outcome and cost. It never includes prompts or agent output.
 
 ## Before you run it
 
