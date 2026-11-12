@@ -180,6 +180,6 @@ A usage limit is a gate status, not a run-wide value.
 
 ## Ledger
 
-The ledger reads `.factory/codex-runs.jsonl` only when `run.json` has `review: "cross"`. With `single`, its HTML and JSON are as before and have no `provider` key. In cross mode, a cost computed from a price that the model page marks "unverified" shows "estimate, price unverified" next to it. The TL;DR cost line says so when any such row exists. Treat that cost as an estimate, not as a fact.
+The ledger reads `.factory/codex-runs.jsonl` only when `run.json` has `review: "cross"`. With `single`, its HTML and JSON are as before and have no `provider` key. In cross mode, Codex rows use the list prices on the model page, cached input included. A model with no price there shows n/a. The ledger does not add the over-272K surcharge, so very long Codex prompts show too low a cost.
 
 See [the schema](bugs.schema.json) and [the model comparison](../../../docs/model-comparison.md).

@@ -1,30 +1,23 @@
 # Claude and Codex models for cross review
 
-This page helps you pick models for cross review. Every price is an estimate, read on 2026-11-12. A price marked "unverified" has no fetched source. Do not treat it as confirmed. Prices change, so check the vendor page first.
+This page helps you pick models for cross review. All values are API list prices in USD per million tokens, read from the vendor pages on 2026-11-12. Prices change, so check the vendor page before you rely on them. Subscription logins use plan limits, not per-token bills.
 
-## OpenAI models
+## Models
 
-Each row cites a page for that model. A value with no model page is marked "unverified". The ledger shows "estimate, price unverified" next to a cost computed from such a price.
+Cached input is what OpenAI calls it; Anthropic calls it a cache read ("hits and refreshes"). Every model below has a 1M or 1.05M context window and 128K max output.
 
-| Model id | Input / output per 1M | Cached input | Context | Source |
-|---|---|---|---|---|
-| `gpt-6-astra` (id unverified) | $10 / $50 (unverified) | not listed | 1.05M (unverified) | No model page fetched. Only the list page was read: https://developers.openai.com/api/docs/models |
-| `gpt-6.1-sol` | $2 / $10 | not listed | 1.05M | https://developers.openai.com/api/docs/models/gpt-6.1-sol |
-| `gpt-6.1-terra` (id unverified) | $1 / $5 (unverified) | not listed | 1.05M (unverified) | No model page fetched. Only the list page was read: https://developers.openai.com/api/docs/models |
-| `gpt-6-luna` | $0.10 / $0.50 | $0.01 | 1.05M | https://developers.openai.com/api/docs/models/gpt-6-luna |
+| Provider | Model | Model id | Input / output | Cached input | Context | Long prompts | Source |
+|---|---|---|---|---|---|---|---|
+| OpenAI | GPT-6 Astra | `gpt-6-astra` | $10 / $50 | $1.00 | 1.05M | Over 272K input: 2x input and cache, 1.5x output | [model page](https://developers.openai.com/api/docs/models/gpt-6-astra) |
+| OpenAI | GPT-6.1 Sol | `gpt-6.1-sol` | $2 / $10 | $0.10 | 1.05M | Over 272K input: 2x input and cache, 1.5x output | [model page](https://developers.openai.com/api/docs/models/gpt-6.1-sol) |
+| OpenAI | GPT-6.1 Terra | `gpt-6.1-terra` | $1 / $5 | $0.05 | 1.05M | Over 272K input: 2x input and cache, 1.5x output | [model page](https://developers.openai.com/api/docs/models/gpt-6.1-terra) |
+| OpenAI | GPT-6 Luna | `gpt-6-luna` | $0.10 / $0.50 | $0.01 | 1.05M | Over 272K input: 2x input and cache, 1.5x output | [model page](https://developers.openai.com/api/docs/models/gpt-6-luna) |
+| Anthropic | Claude Fable 5.2 | `claude-fable-5-2` | $8 / $40 | $0.20 | 1M | Same price at any length | [overview](https://platform.claude.com/docs/en/about-claude/models/overview), [pricing](https://platform.claude.com/docs/en/about-claude/pricing) |
+| Anthropic | Claude Opus 5.5 | `claude-opus-5-5` | $4 / $20 | $0.20 | 1M | Same price at any length | [overview](https://platform.claude.com/docs/en/about-claude/models/overview), [pricing](https://platform.claude.com/docs/en/about-claude/pricing) |
+| Anthropic | Claude Sonnet 5.5 | `claude-sonnet-5-5` | $2 / $10 | $0.10 | 1M | Same price at any length | [overview](https://platform.claude.com/docs/en/about-claude/models/overview), [pricing](https://platform.claude.com/docs/en/about-claude/pricing) |
+| Anthropic | Claude Haiku 5.5 | `claude-haiku-5-5` | $0.10 / $0.50 | $0.01 | 1M | Prompt over 100K: $0.50 / $2.50, cached $0.05 | [overview](https://platform.claude.com/docs/en/about-claude/models/overview), [pricing](https://platform.claude.com/docs/en/about-claude/pricing) |
 
-Luna prompts over 272K input tokens cost 2x for input and 1.5x for output. This comes from the Luna page.
-
-## Claude models
-
-All Claude prices come from the Claude pricing page, which lists each model: https://platform.claude.com/docs/en/about-claude/pricing. This page gives no Claude context sizes. No Claude model id was fetched from a vendor page, so every id below is unverified. The pricing page is not a source for ids. Check the ids on the Claude models overview, https://platform.claude.com/docs/en/about-claude/models/overview, before you rely on them.
-
-| Model | Model id | Input / output / cache read per 1M |
-|---|---|---|
-| Haiku 5.5 | `claude-haiku-5-5` (id unverified) | $0.10 / $0.50 / $0.01 up to 100K prompt; $0.50 / $2.50 / $0.05 over 100K |
-| Sonnet 5.5 | `claude-sonnet-5-5` (id unverified) | $2 / $10 / $0.10 |
-| Opus 5.5 | `claude-opus-5-5` (id unverified) | $4 / $20 / $0.20 |
-| Fable 5.2 | id unverified | $8 / $40 / $0.20 |
+In Codex and ChatGPT Work, GPT-6.1 Sol uses a 500K context window by default, and subscription usage has no long-context surcharge (from the Sol page).
 
 ## Roles
 
@@ -51,8 +44,7 @@ For interactive use, OpenAI ships a plugin for Claude Code: `openai/codex-plugin
 
 - Prices are dated 2026-11-12. Subscription logins use plan limits, not per-token bills.
 - Model access depends on your account.
-- The Sol and Astra long-prompt tiers are unconfirmed.
-- The ledger does not model Luna's long-prompt tier.
+- The ledger does not model the OpenAI over-272K tier, because Codex reports tokens per turn, not per prompt. Costs of very long Codex prompts are too low.
 - `codex exec` accepted `gpt-6.1-sol` on 2026-11-12 (codex-cli 0.166.0-alpha.6).
 
 See [the cross review page](../skills/software-factory/references/cross-provider.md).

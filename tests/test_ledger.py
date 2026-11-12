@@ -96,7 +96,8 @@ class LedgerTest(unittest.TestCase):
         done, data = self.run_ledger(factory)
         self.assertEqual(done.returncode, 0, done.stderr)
         codex = {a["label"]: a for a in data["agents"] if a["provider"] == "codex"}
-        self.assertAlmostEqual(codex["spec review 1"]["cost"], 3.0, places=6)
+        # Sol: 800K uncached at $2, 200K cached at $0.10, 100K output at $10.
+        self.assertAlmostEqual(codex["spec review 1"]["cost"], 2.62, places=6)
         self.assertAlmostEqual(codex["final review 1"]["cost"], 0.21, places=6)
         self.assertEqual(sorted(a["provider"] for a in data["agents"]), ["claude", "claude", "codex", "codex"])
         starts = [a["start"] for a in data["agents"]]
@@ -130,7 +131,7 @@ class LedgerTest(unittest.TestCase):
         self.assertEqual(len(data["agents"]), 1)
         self.assertNotIn("provider", data["agents"][0])
         page = self.page(factory)
-        for text in ("Provider", "Codex", "--codex", "m-codex", "p-codex", "price unverified"):
+        for text in ("Provider", "Codex", "--codex", "m-codex", "p-codex"):
             self.assertNotIn(text, page)
 
     def test_missing_review_key_is_single_mode(self):
@@ -145,22 +146,20 @@ class LedgerTest(unittest.TestCase):
         self.assertEqual(len(data["agents"]), 1)
         self.assertNotIn("provider", data["agents"][0])
 
-    def test_unverified_price_is_marked(self):
-        astra = dict(CODEX_LINES[0], model="gpt-6-astra", label="astra review")
-        factory = self.make_factory("astra", codex=[astra, CODEX_LINES[1]])
-        done, data = self.run_ledger(factory)
-        self.assertEqual(done.returncode, 0, done.stderr)
-        page = self.page(factory)
-        self.assertEqual(page.count("estimate, price unverified"), 2)  # the roster row and the TL;DR line
-        self.assertIn("price unverified for some Codex rows", page)  # the TL;DR line
-        flags = {a["label"]: a["price_unverified"] for a in data["agents"] if a["provider"] == "codex"}
-        self.assertEqual(flags, {"astra review": True, "final review 1": False})
+    def test_every_codex_model_has_a_cached_price_below_input(self):
+        sys.path.insert(0, os.path.dirname(LEDGER))
+        import ledger
+        for model, (rate_in, rate_out, rate_cached) in ledger.CODEX_PRICES.items():
+            self.assertIsInstance(rate_cached, float, model)
+            self.assertLess(rate_cached, rate_in, model)
 
-    def test_verified_price_is_not_marked(self):
-        factory = self.codex_fixture()
+    def test_astra_row_uses_its_cached_price(self):
+        astra = dict(CODEX_LINES[0], model="gpt-6-astra", label="astra review")
+        factory = self.make_factory("astra", codex=[astra])
         done, data = self.run_ledger(factory)
         self.assertEqual(done.returncode, 0, done.stderr)
-        self.assertNotIn("price unverified", self.page(factory))
+        cost = [a["cost"] for a in data["agents"] if a["provider"] == "codex"][0]
+        self.assertAlmostEqual(cost, (800_000 * 10 + 200_000 * 1.0 + 100_000 * 50) / 1e6, places=6)
 
     def test_unknown_codex_model_costs_na(self):
         factory = self.make_factory("odd", codex=[dict(CODEX_LINES[0], model="gpt-9-mystery")])
@@ -246,11 +245,17 @@ class LedgerTest(unittest.TestCase):
         got = ledger.codex_cost("gpt-6-luna", 10, 4, 5)
         self.assertAlmostEqual(got, (6 * 0.10 + 4 * 0.01 + 5 * 0.50) / 1e6, places=9)
 
-    def test_sol_cached_bills_at_input_price(self):
+    def test_sol_cached_price(self):
         sys.path.insert(0, os.path.dirname(LEDGER))
         import ledger
         got = ledger.codex_cost("gpt-6.1-sol", 10, 4, 5)
-        self.assertAlmostEqual(got, (10 * 2.0 + 5 * 10.0) / 1e6, places=9)
+        self.assertAlmostEqual(got, (6 * 2.0 + 4 * 0.10 + 5 * 10.0) / 1e6, places=9)
+
+    def test_terra_cached_price(self):
+        sys.path.insert(0, os.path.dirname(LEDGER))
+        import ledger
+        got = ledger.codex_cost("gpt-6.1-terra", 10, 4, 5)
+        self.assertAlmostEqual(got, (6 * 1.0 + 4 * 0.05 + 5 * 5.0) / 1e6, places=9)
 
 
 if __name__ == "__main__":

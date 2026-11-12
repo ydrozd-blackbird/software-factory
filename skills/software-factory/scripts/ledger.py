@@ -18,18 +18,16 @@ PRICES = {
     "opus": ((4.0, 20.0, 0.20),),
     "fable": ((8.0, 40.0, 0.20),),
 }
-# OpenAI API list prices, read 2026-11-12. Subscription logins use plan limits instead.
-# USD per million tokens: input, output, cached input. None means cached input bills at
-# the input price. Luna's over-272K tier is not modelled: Codex usage is summed per turn,
-# so the size of each prompt is unknown. Luna costs may be low on long prompts.
+# OpenAI API list prices from each model's page, read 2026-11-12 (see docs/model-comparison.md).
+# Subscription logins use plan limits instead. USD per million tokens: input, output, cached input.
+# The over-272K tier (2x input and cache, 1.5x output) is not modelled: Codex usage is summed per
+# turn, so the size of each prompt is unknown. Costs of very long prompts are too low.
 CODEX_PRICES = {
-    "gpt-6-astra": (10.0, 50.0, None),
-    "gpt-6.1-sol": (2.0, 10.0, None),
-    "gpt-6.1-terra": (1.0, 5.0, None),
+    "gpt-6-astra": (10.0, 50.0, 1.00),
+    "gpt-6.1-sol": (2.0, 10.0, 0.10),
+    "gpt-6.1-terra": (1.0, 5.0, 0.05),
     "gpt-6-luna": (0.10, 0.50, 0.01),
 }
-# Prices that docs/model-comparison.md marks "unverified". A cost from one of them is an estimate on an unconfirmed price.
-UNVERIFIED_PRICES = {"gpt-6-astra", "gpt-6.1-terra"}
 LONG_PROMPT = 100_000
 IDLE_MINUTES = 10
 FIRST_COMMIT_TARGETS = {"S": 15, "M": 30}
@@ -133,7 +131,6 @@ def codex_cost(model, input_tokens, cached, output):
         return None
     rate_in, rate_out, rate_cached = prices
     cached = min(cached, input_tokens)
-    rate_cached = rate_in if rate_cached is None else rate_cached
     return round(((input_tokens - cached) * rate_in + cached * rate_cached + output * rate_out) / 1e6, 10)
 
 
@@ -175,7 +172,6 @@ def read_codex(factory, since):
             "minutes": minutes,
             "provider": "codex",
             "status": str(entry.get("status") or ""),
-            "price_unverified": model in UNVERIFIED_PRICES,
         })
     return rows
 
@@ -434,10 +430,7 @@ def tldr(rows, results, size_lines, change, summary, pr, span):
         clean = sum(1 for p in results if p.get("status") == "clean")
         facts.append(("Packages", f"{clean} of {len(results)} clean", "Built and tested in parallel lanes"))
     priced = total_cost(rows)
-    effort = f"{duration(span)} of active time" + (f", about {money(priced)} at API list prices" if priced is not None else "")
-    if any(r.get("price_unverified") and r.get("cost") is not None for r in rows):
-        effort += " (estimate, price unverified for some Codex rows)"
-    facts.append(("Effort", f"{len(rows)} agents", effort))
+    facts.append(("Effort", f"{len(rows)} agents", f"{duration(span)} of active time" + (f", about {money(priced)} at API list prices" if priced is not None else "")))
     cells = "".join(f"<div><span>{esc(k)}</span><b>{esc(v)}</b><small>{esc(d)}</small></div>" for k, v, d in facts)
     areas = ""
     if change and change["areas"]:
@@ -530,22 +523,18 @@ def render(rows, results, title, sizes=(), first_commit=None, top=""):
     def flag(r):
         return f' <span class="s-blocked">{esc(r["status"])}</span>' if r.get("status") == "wrong-target" else ""
 
-    def unverified(r):
-        if r.get("price_unverified") and r.get("cost") is not None:
-            return '<br><small style="color:var(--muted)">estimate, price unverified</small>'
-        return ""
-
     provider_head = "<th>Provider</th>" if codex else ""
     roster = "".join(
         f'<tr><td>{esc(r["label"])}{flag(r)}</td><td>{esc(r["phase"])}</td>'
         + (f'<td><span class="p-{lane(r)}">{esc(r.get("provider", "claude"))}</span></td>' if codex else "")
         + f'<td><span class="p-{lane(r)}">{esc(r["model"])}</span></td>'
-        f'<td class="t">{esc(r["start"][11:19])}</td><td class="n">{r["minutes"]}</td><td class="n">{r["tool_calls"]}</td><td class="n">{r["output_tokens"]:,}</td><td class="n">{money(r.get("cost"))}{unverified(r)}</td></tr>'
+        f'<td class="t">{esc(r["start"][11:19])}</td><td class="n">{r["minutes"]}</td><td class="n">{r["tool_calls"]}</td><td class="n">{r["output_tokens"]:,}</td><td class="n">{money(r.get("cost"))}</td></tr>'
         for r in rows
     )
     note = (
-        "<p>Codex costs use OpenAI API list prices read 2026-11-12. Cached input uses the cached price where OpenAI lists one, "
-        "and the input price otherwise. Subscription logins use plan limits instead. A model with no price shows n/a.</p>"
+        "<p>Codex costs use OpenAI API list prices read 2026-11-12. Cached input uses the cached price. "
+        "Prompts over 272K input tokens cost more than shown. Subscription logins use plan limits instead. "
+        "A model with no price shows n/a.</p>"
         if codex
         else ""
     )
