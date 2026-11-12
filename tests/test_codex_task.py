@@ -1367,5 +1367,98 @@ class Budget(Base):
         self.assertEqual([x["status"] for x in self.all_rows()], ["attempt", "cancelled"])
 
 
+class ReportRules(Base):
+    """An initial report has no answers; every finding id is one --open-ids accepts; the reviewer sets no verdict."""
+
+    def test_initial_report_with_answers_is_bad_output(self):
+        self.assertEqual(self.run_helper(stub="answered2").returncode, 7)
+        self.assertEqual(self.log()[-1]["status"], "bad-output")
+
+    def test_finding_id_that_open_ids_refuses_is_bad_output(self):
+        self.assertEqual(self.run_helper(stub="badid").returncode, 7)
+
+    def test_reviewer_verdict_is_bad_output(self):
+        self.assertEqual(self.run_helper(stub="verdictset").returncode, 7)
+
+    def test_finding_with_a_good_id_and_null_verdict_is_ok(self):
+        self.assertEqual(self.run_helper(stub="onebug").returncode, 0)
+
+
+class Reuse(Base):
+    """Exit 8 marks a prior report reusable only for the same round, and only if it passes today's checks."""
+
+    def test_reuse_needs_an_answer_for_every_current_open_id(self):
+        self.assertEqual(self.run_helper(stub="onebug").returncode, 0)  # initial: F1
+        self.at(self.c3)
+        self.assertEqual(self.run_helper(rnd="followup", stub="answered", open_ids="F1").returncode, 0)  # answers F1, finds F2
+        same = json.loads(self.run_helper(rnd="followup", open_ids="F1").stdout)
+        self.assertEqual((same["exit"], same["status"], same["reusable"]), (8, "budget-spent", True))
+        more = json.loads(self.run_helper(rnd="followup", open_ids="F1,F2").stdout)
+        self.assertEqual((more["exit"], more["status"], more["reusable"]), (8, "budget-spent", False))
+
+    def test_initial_request_never_reuses_a_followup_report(self):
+        self.assertEqual(self.fallback().returncode, 0)  # the initial round was an Opus fallback on c2
+        self.at(self.c3)
+        self.assertEqual(self.run_helper(rnd="followup", open_ids="").returncode, 0)
+        line = json.loads(self.run_helper(head=self.c3).stdout)
+        self.assertEqual((line["exit"], line["status"], line["reusable"]), (8, "budget-spent", False))
+
+
+class LiveOwner(Base):
+    """A lock whose owner is alive stays held, however old it is. Only a dead owner's lock is reclaimed."""
+
+    def hold_lock(self):
+        Budget.write_owner(self, os.getpid(), start=time.time() - 540 - 600)  # far past timeout + 120 s
+        code = "import fcntl, os, sys, time\nfd = os.open(sys.argv[1], os.O_RDONLY)\nfcntl.flock(fd, fcntl.LOCK_EX)\nprint('held', flush=True)\ntime.sleep(60)\n"
+        p = subprocess.Popen([sys.executable, "-c", code, self.lock_path()], stdout=subprocess.PIPE, text=True)
+        self.addCleanup(lambda: (p.kill(), p.wait(), p.stdout.close()))
+        self.assertEqual(p.stdout.readline().strip(), "held")
+        return p
+
+    def test_live_owner_past_the_timeout_keeps_the_lock(self):
+        self.hold_lock()
+        r = self.run_helper()
+        self.assertEqual(r.returncode, 8)
+        self.assertEqual(json.loads(r.stdout)["status"], "busy")
+        self.assertFalse(self.launched())
+        self.assertEqual(self.all_rows(), [])
+
+    def test_live_owner_makes_record_fallback_busy_with_its_target(self):
+        self.hold_lock()
+        r = self.fallback()
+        self.assertEqual(r.returncode, 8)
+        line = json.loads(r.stdout)
+        self.assertEqual((line["status"], line["head"], line["base"]), ("busy", self.c2, None))
+        self.assertEqual(self.all_rows(), [])
+
+    def test_lock_is_reclaimed_once_the_owner_is_gone(self):
+        p = self.hold_lock()
+        p.kill()
+        p.wait()
+        Budget.write_owner(self, Budget.dead_pid(self), start=time.time() - 540 - 600)
+        self.assertEqual(self.run_helper().returncode, 0)
+        self.assertEqual([x["status"] for x in self.log()], ["stale-lock", "ok"])
+
+    def test_record_fallback_logs_a_stale_lock_it_reclaims(self):
+        Budget.write_owner(self, Budget.dead_pid(self))
+        r = self.fallback()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("codex_task: stale-lock", r.stderr)
+        self.assertEqual([x["status"] for x in self.all_rows()], ["stale-lock", "fallback"])
+
+    def test_a_running_helper_holds_its_own_lock(self):
+        self.set_mode("hang")
+        cmd = self.command("final", "initial", "auto", None, None, None, "auto", (), "auto", "auto")
+        self.prepare_stub("hang", "final", None, self.expected_base("final", "initial", None, "auto"), "auto")
+        p = subprocess.Popen(cmd, env=self.environment(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.addCleanup(lambda: (p.poll() is None and p.terminate(), p.wait()))
+        deadline = time.time() + 20
+        while time.time() < deadline and not os.path.exists(os.path.join(self.stubdir, "pid")):
+            time.sleep(0.1)
+        sys.path.insert(0, os.path.dirname(HELPER))
+        import codex_task
+        self.assertTrue(codex_task.held(self.lock_path()))
+
+
 if __name__ == "__main__":
     unittest.main()

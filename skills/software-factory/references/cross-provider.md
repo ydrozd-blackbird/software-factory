@@ -10,7 +10,7 @@ Use it only when the user asks for a mixed or cross review, and `run.json` has `
 
 Codex spends another account's limits and sends data to another company. You build a bundle file for each gate. The Spec bundle is `SPEC.md` and `packages.json`. It has no `BRIEF.md` unless the user agrees. The Final bundle is the diff file, the last 60 lines of the test output, and the open findings by id. Codex can also read the repo, because the sandbox limits writes, not reads. When cross is on, your first reply lists the exact contents of both bundles and says this.
 
-Before each gate, on either transport, run the same env-file and secret check as section 7 step 2, on the repo and on the lanes. A lane `.secrets.env` or a tracked env file stops cross review for that gate until the user confirms.
+Before each gate, on either transport, run the same env-file and secret check as section 7 step 2, on the repo and on the lanes. A lane `.secrets.env` or a tracked env file stops cross review for that gate until the user confirms. Then read the exact bundle you will send, the test-output tail included. A test can print a token, a connection string or a customer record. Cut such lines from the bundle, or stop cross review for that gate until the user confirms.
 
 ## Detection
 
@@ -31,7 +31,7 @@ If neither works, use `single` and say why in your first reply. In `single`, det
 - Each gate gets one follow-up. Run it only after you confirmed a critical or high finding and a fix landed. Give it the fix diff and the open finding ids. For Spec, the fix diff is `diff -u` of the two snapshots. The Final follow-up's base is the head that the initial `ok` row or the `fallback` row recorded. Any other `--expect-base` is exit 2 `wrong-base`.
 - A follow-up starts only when the initial round is finished: an `ok` initial row, or a `fallback` row for that subject in this run. An `attempt` row alone does not count.
 - Use one transport per gate. If the initial round used the CLI helper, the follow-up uses the helper too. If it used a bridge, the follow-up uses the bridge. Before you start any round, check both records: `codex-runs.jsonl` for the helper and `run.json` `reviews` for a bridge. If the evidence of a gate cannot be checked, the gate stays a draft. Before a follow-up, check that the `transport` and the `tool` name in `run.json` `reviews` for the initial round are the same as for the follow-up. If they differ, the gate stays a draft.
-- Every finding has an `id` (F1, F2 and so on). Findings keep their ids across rounds. The follow-up prompt lists the open ids. The follow-up report answers each one in `answers`: `{id, status: fixed|open|rejected, evidence}`. An id it does not answer stays open. An initial report has `answers` as an empty array.
+- Every finding has an `id` (F1, F2 and so on), made of letters, digits and `_.:-`, 40 characters at most, so `--open-ids` can name it. Findings keep their ids across rounds. The follow-up prompt lists the open ids. The follow-up report answers each one in `answers`: `{id, status: fixed|open|rejected, evidence}`. An id it does not answer stays open. An initial report has `answers` as an empty array. The reviewer leaves `verdict` null on every finding; you set verdicts in `BUGS.md`.
 - On size S, only the Final gate runs.
 - Ready needs lane 0's head to equal the head of the last Final round.
 
@@ -86,16 +86,16 @@ Run it as a background command and wait with `Monitor`. For a large diff, set a 
 | 4 | usage-limit | Codex hit a usage or rate limit, also when it only reports it in an `error` event. |
 | 5 | timeout | Killed after `--timeout`. |
 | 6 | error | Any other Codex failure. An `error` or `turn.failed` event in the JSON stream counts, even when Codex exits 0. |
-| 7 | bad-output | Free text, a missing key, an empty `scope.checked`, a finding with no `id`, a follow-up with no `answers`, `answers` that do not match `--open-ids`, or an id that is in `bugs` and also answered `fixed` or `rejected`. |
+| 7 | bad-output | Free text, a missing key, an empty `scope.checked`, a finding with no `id` or an id that `--open-ids` would refuse, a finding with a `verdict` that is not null, an initial report with `answers`, a follow-up with no `answers`, `answers` that do not match `--open-ids`, or an id that is in `bugs` and also answered `fixed` or `rejected`. |
 | 8 | budget-spent, attempts-spent or busy | Stdout names one. `budget-spent`: an `ok` row exists. `attempts-spent`: two attempts ran and none was `ok`. `busy`: a live lock holds the subject, so another review of this gate is running. `--record-fallback` also gives `busy` when the lock is held. |
 | 9 | wrong-target | `target_ok` is false, or the head, base or Spec hash is not the expected one. |
 
 Stdout depends on the exit:
 
 - A launched round prints one JSON line with `exit`, `status`, `out`, `task_id` and `tokens`.
-- Exit 8 prints one JSON line with `exit`, `status`, `out`, `prior_out`, `prior_head`, `prior_base` and `reusable`. `reusable` is true only when the out file exists and its sha256 equals the `out_sha256` of the `ok` row, on the same head and base.
+- Exit 8 prints one JSON line with `exit`, `status`, `out`, `prior_out`, `prior_head`, `prior_base` and `reusable`. `reusable` is true only when the prior `ok` row is for the same subject and round, on the same head and base, its out file still has the logged sha256, and the report passes every check a new report gets, with the current `--open-ids`. So a follow-up report that does not answer a newly open id is never reusable.
 - Exit 2 prints nothing on stdout. It prints one `codex_task: usage <reason>` line on stderr.
-- `--record-fallback` prints its own one-line JSON with `exit`, `status`, `subject`, `head` and `base`.
+- `--record-fallback` prints its own one-line JSON with `exit`, `status`, `subject`, `head` and `base`, also on `busy`. If it removes a dead lock, it adds a `stale-lock` row first.
 - Exit 6 prints `codex_task: error <auth|network|model|other>`, never raw text.
 
 The helper appends rows to `.factory/codex-runs.jsonl`. Before each launch it writes an `attempt` row (`start`, `subject`, `round`). A launch that ends adds one result row, for every exit except 2 and 8. A helper crash (exit 1 `crash`) leaves only its `attempt` row. A signal adds a `cancelled` row (exit 1). A dead lock that it removes adds a `stale-lock` row. `--record-fallback` adds one `fallback` row (`subject`, `round` initial, `head`, `base`, `status`). A result row has `start`, `end`, `provider`, `model`, `effort`, `label`, `phase`, `subject`, `round`, `head`, `base`, `out`, `out_sha256`, `cd`, `exit`, `status`, `task_id`, the token counters and `hint`. `out_sha256` is the sha256 of the out file, on `ok` rows. The file holds no prompt or output text. The label is a gate name such as `final followup`.
@@ -106,6 +106,7 @@ Budget rules:
 - At most two launched attempts per subject and round. A third is exit 8 `attempts-spent`.
 - The budget counts only rows that started at or after `started` in `run.json`. Rows left by an earlier run in the same repo do not count. With no `run.json` or no `started`, every row counts.
 - One lock guards each gate subject, not each round: `.factory/tmp/budget/<sha1 of the subject>.lock`. While the initial round runs, a follow-up of that subject gets exit 8 `busy`. Only the owner removes the lock. SIGTERM kills the Codex group and frees the lock.
+- The owner holds an OS file lock (`flock`) on the lock file from before the file appears until the owner exits. While it is held, the lock is never stale, even when the owner was paused for a long time, for example when the laptop slept. When the owner dies, the OS drops it. Then the lock is stale if its pid and Codex group are gone on this host. The age rule (timeout + 120 s) applies only where `flock` cannot tell, such as a lock from another host. Keep `.factory/` on a local disk.
 - The three exit 8 statuses: `budget-spent` (an `ok` row exists), `attempts-spent` (two attempts ran and none was `ok`), `busy` (a live lock; another review of this gate is running: wait for it and reread both records). Only one of them is named.
 - Exits 1, 5, 6 and 7 retry once, with a fresh `--out`. An existing `--out` is exit 2.
 
@@ -118,7 +119,7 @@ Put these lines in every prompt:
 - Final: review `git diff <base>...<head>` yourself. The diff file is only a copy. Return `base` and `reviewed_head`.
 - Spec: read only the `spec-<sha256>.md` file the prompt names. Return `base` as null and `reviewed_head` as that sha256. Else the helper exits 9.
 - List what you checked in `scope.checked` and what you did not in `scope.unchecked`.
-- Each finding needs an `id`, a severity, a failing scenario and evidence.
+- Each finding needs an `id` (such as F1), a severity, a failing scenario and evidence. Set `verdict` to null on every finding.
 - Initial: return `answers` as `[]`. Follow-up: the prompt lists the open ids. Answer each one in `answers` with a status and evidence.
 
 ## Fallback
@@ -152,6 +153,13 @@ So refuse cross for a gate while a repo or lane `.env*` or `.secrets.env` file h
 ## Bridge
 
 A bridge review has the same budget and the same statuses. The helper does not log it, so you record each round in `run.json` `reviews`: the provider (from the bridge tool's own metadata), the target (`head` and `base`), the status and the `task_id`. Before you start any round, read both records, the helper log and `reviews`. A gate that began on a bridge continues on the bridge. A gate that began on the CLI helper continues on the helper. Each round in `reviews` records `transport` (`cli` or `bridge`) and `tool` (the bridge tool name, null for the CLI). Before a follow-up, check that both are the same as in the initial round. If they are not, the gate stays a draft. The ledger has no rows for bridge reviews.
+
+A bridge round follows the same contract as the helper, done by hand:
+
+1. Before you send it, run the same checks as the helper: full SHAs from `git rev-parse`, a base from `git merge-base` (or the initial round's head for a follow-up), and a diff that is not empty. A failed check means you do not send it.
+2. Write the round to `reviews` with status `started` before you launch it, and add its `task_id` as soon as the bridge returns one. A `started` row counts as one attempt. At most two attempts per round.
+3. On a resume, a `started` row with a `task_id` means: ask the bridge for that task's result. Do not launch a new round. A `started` row with no `task_id` is a spent attempt.
+4. Accept the report only when it passes the helper's checks: the schema, `target_ok` true, the expected head and base, ids that `--open-ids` accepts, null verdicts, and, on a follow-up, one answer per open id. A report that fails is `bad-output` or `wrong-target`, as with the helper.
 
 `run.json` fields:
 

@@ -35,7 +35,7 @@ A follow-up report has `answers`: exactly one {id, status, evidence} per id in -
 An id that is both in `bugs` and answered `fixed` or `rejected` is contradictory: exit 7, and the round is not spent.
 Any `error` or `turn.failed` event is a failure, even when Codex exits 0.
 """
-import argparse, datetime as dt, hashlib, json, os, re, shutil, signal, socket, subprocess, sys, tempfile, time
+import argparse, datetime as dt, fcntl, hashlib, json, os, re, shutil, signal, socket, subprocess, sys, tempfile, time
 
 ENV_KEEP = ("PATH HOME USER LOGNAME SHELL LANG LC_ALL LC_CTYPE TERM TMPDIR CODEX_HOME OPENAI_API_KEY OPENAI_BASE_URL "
             "CODEX_API_KEY HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY http_proxy https_proxy all_proxy no_proxy "
@@ -219,20 +219,22 @@ def valid(value, schema, root):
             return False
     return True
 
+ID_RE = re.compile(r"[A-Za-z0-9_.:-]{1,40}")  # the same rule as --open-ids, so every finding can be followed up
+
 def ids_ok(data, args):
-    """Every finding has a unique string id. A follow-up carries `answers`: exactly one per open id, no extra, no repeat.
-    Any other round may carry an empty list."""
+    """Every finding has a unique id that --open-ids accepts, and a null verdict: the lead sets verdicts, not the reviewer.
+    A follow-up carries `answers`: exactly one per open id, no extra, no repeat. An initial round carries none."""
     seen = set()
     for bug in data["bugs"]:
         bid = bug.get("id") if isinstance(bug, dict) else None
-        if not isinstance(bid, str) or not bid or bid in seen:
+        if not isinstance(bid, str) or not ID_RE.fullmatch(bid) or bid in seen or bug.get("verdict") is not None:
             return False
         seen.add(bid)
     answers = data.get("answers")
     followup = args.round == "followup"
     if answers is None:
         return not followup
-    if not isinstance(answers, list):
+    if not isinstance(answers, list) or (not followup and answers):
         return False
     if not all(isinstance(a, dict) and isinstance(a.get("id"), str) and a.get("status") in ANSWER_STATUS
                and isinstance(a.get("evidence"), str) for a in answers):
@@ -245,11 +247,11 @@ def ids_ok(data, args):
         return not any(a["status"] != "open" and a["id"] in seen for a in answers)
     return True
 
-def check_output(args, head, base, resolved):
+def check_output(args, head, base, resolved, path=None):
     """Return the exit code for a run where codex exited 0 with no failure event.
-    `resolved` is the schema that was passed to Codex."""
+    `resolved` is the schema that was passed to Codex. `path` is the report, by default --out."""
     try:
-        with open(args.out, encoding="utf-8") as f: data = json.loads(f.read())
+        with open(path or args.out, encoding="utf-8") as f: data = json.loads(f.read())
     except (ValueError, OSError):
         return 7
     if not isinstance(data, dict) or not valid(data, resolved, resolved) or not isinstance(data.get("bugs"), list):
@@ -267,8 +269,26 @@ def alive(kill, n):
     except OSError: pass  # alive, but owned by someone else
     return True
 
+def held(path):
+    """True when a live process holds the lock file's flock. The owner takes it before the file appears and keeps it
+    until it exits, so a paused or slow owner still holds it. The OS drops it when the owner dies."""
+    try: fd = os.open(path, os.O_RDONLY)
+    except OSError: return False
+    try:
+        fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        return False
+    except BlockingIOError:
+        return True
+    except OSError:
+        return False  # no flock here: the pid and age rules decide
+    finally:
+        os.close(fd)
+
 def lock_is_stale(path, now):
-    """Stale: helper and Codex group both gone on this host, or older than its timeout + 120 s."""
+    """Never stale while its owner holds the flock. Otherwise stale when the helper and its Codex group are both
+    gone on this host, or when it is older than its timeout + 120 s (another host, or no flock support)."""
+    if held(path):
+        return False
     try:
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
@@ -284,32 +304,59 @@ def lock_is_stale(path, now):
             return True
     return now - start > timeout + LOCK_GRACE
 
+HELD = {}  # lock path -> the open file that holds its flock while this process lives
+
 def lock_file(dirname, data):
+    """A temp file with the lock data and an flock on it. Return (temp path, fd); the caller keeps or closes fd."""
     fd, tmp = tempfile.mkstemp(prefix=".lock-", dir=dirname)
-    with os.fdopen(fd, "w", encoding="utf-8") as f: f.write(json.dumps(data))
-    return tmp
+    try: fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError: pass  # no flock on this filesystem: the pid and age rules still apply
+    os.write(fd, json.dumps(data).encode("utf-8"))
+    return tmp, fd
+
+def hold(path, fd):
+    old = HELD.pop(path, None)
+    HELD[path] = fd
+    if old is not None:
+        os.close(old)
 
 def record_child(path, pid):
-    """Add the Codex child's pid and process-group id (the same) to the lock, in one atomic replace."""
+    """Add the Codex child's pid and process-group id (the same) to the lock, in one atomic replace.
+    The new file is flocked before it replaces the old one, so the lock is held the whole time."""
     try:
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
-        os.replace(lock_file(os.path.dirname(path), dict(data, child_pid=pid, child_pgid=pid)), path)
+        tmp, fd = lock_file(os.path.dirname(path), dict(data, child_pid=pid, child_pgid=pid))
     except (OSError, ValueError, TypeError):
-        pass
+        return
+    try:
+        os.replace(tmp, path)
+        hold(path, fd)
+    except OSError:
+        os.close(fd)
+        rm(tmp)
 
 def write_lock(path, timeout):
-    tmp = lock_file(os.path.dirname(path), {"pid": os.getpid(), "host": socket.gethostname(), "start": time.time(),
-                                            "timeout": timeout})
-    try: os.link(tmp, path)  # fails with FileExistsError if the lock exists
-    finally: rm(tmp)
+    tmp, fd = lock_file(os.path.dirname(path), {"pid": os.getpid(), "host": socket.gethostname(), "start": time.time(),
+                                                "timeout": timeout})
+    try:
+        os.link(tmp, path)  # fails with FileExistsError if the lock exists
+        hold(path, fd)
+    except BaseException:
+        os.close(fd)
+        raise
+    finally:
+        rm(tmp)
 
 def release(path):
-    """Remove a lock, but only if this process owns it."""
+    """Remove a lock, but only if this process owns it, then drop its flock."""
     try:
         with open(path, encoding="utf-8") as f:
             if json.load(f).get("pid") == os.getpid(): rm(path)
     except (OSError, ValueError, AttributeError): pass
+    fd = HELD.pop(path, None)
+    if fd is not None:
+        os.close(fd)
 
 def reserve(tmp_real, subject, timeout):
     """Return (lock path, stale lock name or None). The path is None if a round of the subject is running.
@@ -377,7 +424,7 @@ def parse_open_ids(args):
     if not args.open_ids.strip():
         return []
     ids = [x.strip() for x in args.open_ids.split(",")]
-    if not all(re.fullmatch(r"[A-Za-z0-9_.:-]{1,40}", x) for x in ids) or len(set(ids)) != len(ids):
+    if not all(ID_RE.fullmatch(x) for x in ids) or len(set(ids)) != len(ids):
         raise Usage("bad-open-ids")
     return ids
 
@@ -475,6 +522,23 @@ def check_followup(args, rows, head):
     diff_must_exist(args.cd, base, head)
     return base
 
+def reusable(last, args, head, base):
+    """A finished report can stand in for this call only when it is the same subject and round, on the same head and
+    base, unchanged on disk, and it still passes every check a fresh report gets, with the current --open-ids."""
+    if not last or last.get("subject") != args.subject or last.get("round") != args.round:
+        return False
+    if last.get("head") != head or last.get("base") != base:
+        return False
+    out = last.get("out")
+    if not isinstance(out, str) or last.get("out_sha256") is None or sha_file(out) != last["out_sha256"]:
+        return False
+    try:
+        with open(args.schema, encoding="utf-8") as f:
+            resolved = resolve_schema(json.load(f))
+    except (OSError, ValueError, TypeError, KeyError):
+        return False
+    return check_output(args, head, base, resolved, path=out) == 0
+
 def record_fallback(args, factory):
     """Add one `fallback` row: the lead reviewed the subject with Opus after Codex failed. Nothing is launched.
     The subject lock guards the check and the write, so a round cannot slip in between. Busy is exit 8."""
@@ -492,14 +556,19 @@ def record_fallback(args, factory):
     tmp_root = os.path.join(factory, "tmp")
     if os.path.islink(tmp_root):
         raise Usage("tmp-symlink")
-    lock, _ = reserve(real(tmp_root), args.subject, FALLBACK_LOCK_TIMEOUT)
+    lock, stale = reserve(real(tmp_root), args.subject, FALLBACK_LOCK_TIMEOUT)
     if lock is None:
-        print(json.dumps({"exit": 8, "status": "busy", "subject": args.subject}))
+        print(json.dumps({"exit": 8, "status": "busy", "subject": args.subject, "head": head, "base": base}))
         sys.stderr.write("codex_task: busy\n")
         return 8
     STATE["lock"] = lock
     try:
         log_path = os.path.join(factory, "codex-runs.jsonl")
+        if stale:
+            now = utc_now()
+            log_row(log_path, {"start": now, "end": now, "subject": args.subject, "round": "initial",
+                               "status": "stale-lock", "exit": None})
+            sys.stderr.write("codex_task: stale-lock\n")
         cutoff = run_started(factory)
         rows = [r for r in read_log(log_path) if in_run(r, cutoff) and r.get("subject") == args.subject]  # read under the lock
         if any(r.get("round") == "initial" and r.get("status") == "ok" for r in rows):
@@ -567,8 +636,7 @@ def run(args):
             status = "budget-spent" if earlier else "attempts-spent" if capped else "busy"
             print(json.dumps({"exit": 8, "status": status, "out": args.out, "prior_out": last.get("out"),
                               "prior_head": last.get("head"), "prior_base": last.get("base"),
-                              "reusable": bool(last) and last.get("head") == head and last.get("base") == base
-                              and last.get("out_sha256") is not None and sha_file(last.get("out")) == last["out_sha256"]}))
+                              "reusable": reusable(last, args, head, base)}))
             sys.stderr.write("codex_task: %s\n" % status)
             return 8
         log_row(log_path, {"start": ctx["start"], "subject": args.subject, "round": args.round, "status": "attempt"})

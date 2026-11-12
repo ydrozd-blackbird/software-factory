@@ -48,8 +48,14 @@ contradictrej="$head_part"'"bugs":[{"id":"F1",'"$bugitem"'}],"answers":[{"id":"F
 stillopen="$head_part"'"bugs":[{"id":"F1",'"$bugitem"'}],"answers":[{"id":"F1","status":"open","evidence":"x"}],"target_ok":true}'
 extraanswer="$head_part"'"bugs":[],"answers":[{"id":"F1","status":"fixed","evidence":"x"},{"id":"F9","status":"open","evidence":"y"}],"target_ok":true}'
 extrakey='{"provider":"codex","model":"stub","base":'"$bv"',"reviewed_head":"'"$rh"'","scope":{"checked":["diff"],"unchecked":[]},"bugs":[],"answers":[],"target_ok":true,"extra":1}'
+badid="$head_part"'"bugs":[{"id":"F 1",'"$bugitem"'}],"answers":[],"target_ok":true}'
+verdictset="$head_part"'"bugs":[{"id":"F1","title":"t","severity":"low","repro":"r","expected":"e","actual":"a","evidence":"v","files":[],"verdict":"confirmed"}],"answers":[],"target_ok":true}'
+onebug="$head_part"'"bugs":[{"id":"F1",'"$bugitem"'}],"answers":[],"target_ok":true}'
 case "$mode" in
   ok) ok_events; echo "$good" > "$out" ;;
+  badid) ok_events; echo "$badid" > "$out" ;;
+  verdictset) ok_events; echo "$verdictset" > "$out" ;;
+  onebug) ok_events; echo "$onebug" > "$out" ;;
   quota_noise) ok_events; echo "quota 429" >&2; echo "$good" > "$out" ;;
   limit) echo '{"type":"error","message":"You'"'"'ve hit your usage limit"}'; exit 1 ;;
   ratelimit) echo '{"type":"error","message":"Rate limit reached"}'; exit 1 ;;
