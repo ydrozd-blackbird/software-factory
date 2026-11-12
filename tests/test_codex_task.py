@@ -1413,6 +1413,7 @@ class LiveOwner(Base):
         p = subprocess.Popen([sys.executable, "-c", code, self.lock_path()], stdout=subprocess.PIPE, text=True)
         self.addCleanup(lambda: (p.kill(), p.wait(), p.stdout.close()))
         self.assertEqual(p.stdout.readline().strip(), "held")
+        Budget.write_owner(self, p.pid, start=time.time() - 540 - 600)  # the holder is the owner; same file, same flock
         return p
 
     def test_live_owner_past_the_timeout_keeps_the_lock(self):
@@ -1434,10 +1435,41 @@ class LiveOwner(Base):
     def test_lock_is_reclaimed_once_the_owner_is_gone(self):
         p = self.hold_lock()
         p.kill()
-        p.wait()
-        Budget.write_owner(self, Budget.dead_pid(self), start=time.time() - 540 - 600)
+        p.wait()  # the lock file keeps the dead owner's own metadata
         self.assertEqual(self.run_helper().returncode, 0)
         self.assertEqual([x["status"] for x in self.log()], ["stale-lock", "ok"])
+
+    def test_dead_owner_with_a_fresh_lock_is_reclaimed_by_pid(self):
+        p = self.hold_lock()
+        Budget.write_owner(self, p.pid)  # a young lock: only the dead pid can make it stale
+        p.kill()
+        p.wait()
+        self.assertEqual(self.run_helper().returncode, 0)
+        self.assertEqual([x["status"] for x in self.log()], ["stale-lock", "ok"])
+
+    def test_broken_schema_makes_reuse_false_not_a_crash(self):
+        self.assertEqual(self.run_helper().returncode, 0)
+        bad = os.path.join(self.factory, "bad-schema.json")
+        write_text(bad, "[]")
+        r = self.run_helper(schema=bad)
+        self.assertEqual(r.returncode, 8, r.stderr)
+        line = json.loads(r.stdout)
+        self.assertEqual((line["status"], line["reusable"]), ("budget-spent", False))
+
+    def test_failed_lock_write_leaves_no_temp_file(self):
+        sys.path.insert(0, os.path.dirname(HELPER))
+        import codex_task
+        d = os.path.join(self.factory, "tmp", "budget")
+        os.makedirs(d, exist_ok=True)
+        with mock.patch.object(codex_task.os, "write", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                codex_task.lock_file(d, {"pid": 1})
+        self.assertEqual([n for n in os.listdir(d) if n.startswith(".lock-")], [])
+
+    def test_record_child_reports_failure(self):
+        sys.path.insert(0, os.path.dirname(HELPER))
+        import codex_task
+        self.assertFalse(codex_task.record_child(os.path.join(self.factory, "no-such.lock"), 12345))
 
     def test_record_fallback_logs_a_stale_lock_it_reclaims(self):
         Budget.write_owner(self, Budget.dead_pid(self))

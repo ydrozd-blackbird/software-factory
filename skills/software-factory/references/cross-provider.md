@@ -10,7 +10,7 @@ Use it only when the user asks for a mixed or cross review, and `run.json` has `
 
 Codex spends another account's limits and sends data to another company. You build a bundle file for each gate. The Spec bundle is `SPEC.md` and `packages.json`. It has no `BRIEF.md` unless the user agrees. The Final bundle is the diff file, the last 60 lines of the test output, and the open findings by id. Codex can also read the repo, because the sandbox limits writes, not reads. When cross is on, your first reply lists the exact contents of both bundles and says this.
 
-Before each gate, on either transport, run the same env-file and secret check as section 7 step 2, on the repo and on the lanes. A lane `.secrets.env` or a tracked env file stops cross review for that gate until the user confirms. Then read the exact bundle you will send, the test-output tail included. A test can print a token, a connection string or a customer record. Cut such lines from the bundle, or stop cross review for that gate until the user confirms.
+Before each gate, on either transport, run the same env-file and secret check as section 7 step 2, on the repo and on the lanes. A lane `.secrets.env` or a tracked env file stops cross review for that gate until the user confirms. Then, before every send (the initial round and the follow-up), read the exact bundle you will send, the test-output tail included. A test can print a token, a connection string or a customer record. Cut such lines from the bundle, or stop cross review for that gate until the user confirms.
 
 ## Detection
 
@@ -85,8 +85,8 @@ Run it as a background command and wait with `Monitor`. For a large diff, set a 
 | 3 | missing | Codex not found. |
 | 4 | usage-limit | Codex hit a usage or rate limit, also when it only reports it in an `error` event. |
 | 5 | timeout | Killed after `--timeout`. |
-| 6 | error | Any other Codex failure. An `error` or `turn.failed` event in the JSON stream counts, even when Codex exits 0. |
-| 7 | bad-output | Free text, a missing key, an empty `scope.checked`, a finding with no `id` or an id that `--open-ids` would refuse, a finding with a `verdict` that is not null, an initial report with `answers`, a follow-up with no `answers`, `answers` that do not match `--open-ids`, or an id that is in `bugs` and also answered `fixed` or `rejected`. |
+| 6 | error | Any other Codex failure. An `error` or `turn.failed` event in the JSON stream counts, even when Codex exits 0. So does a helper that cannot record the Codex child in the lock: it stops Codex first. |
+| 7 | bad-output | Free text, a missing key, an empty `scope.checked`, a finding with no `id` or an id that `--open-ids` would refuse, a finding with a `verdict` that is not null, an initial report with non-empty `answers`, a follow-up with no `answers`, `answers` that do not match `--open-ids`, or an id that is in `bugs` and also answered `fixed` or `rejected`. |
 | 8 | budget-spent, attempts-spent or busy | Stdout names one. `budget-spent`: an `ok` row exists. `attempts-spent`: two attempts ran and none was `ok`. `busy`: a live lock holds the subject, so another review of this gate is running. `--record-fallback` also gives `busy` when the lock is held. |
 | 9 | wrong-target | `target_ok` is false, or the head, base or Spec hash is not the expected one. |
 
@@ -156,10 +156,17 @@ A bridge review has the same budget and the same statuses. The helper does not l
 
 A bridge round follows the same contract as the helper, done by hand:
 
-1. Before you send it, run the same checks as the helper: full SHAs from `git rev-parse`, a base from `git merge-base` (or the initial round's head for a follow-up), and a diff that is not empty. A failed check means you do not send it.
+1. Before you send it, run the same checks as the helper for its gate. A failed check means you do not send it.
+   - Spec: take the sha256 of the exact bundle file. It is the round's `head`, and `base` is null. A follow-up needs a new bundle, so its sha256 must differ from the initial round's.
+   - Final: full SHAs from `git rev-parse`, a base from `git merge-base $BASE HEAD` (for a follow-up, the initial round's head), and `git diff --quiet base head` must report a difference.
 2. Write the round to `reviews` with status `started` before you launch it, and add its `task_id` as soon as the bridge returns one. A `started` row counts as one attempt. At most two attempts per round.
 3. On a resume, a `started` row with a `task_id` means: ask the bridge for that task's result. Do not launch a new round. A `started` row with no `task_id` is a spent attempt.
-4. Accept the report only when it passes the helper's checks: the schema, `target_ok` true, the expected head and base, ids that `--open-ids` accepts, null verdicts, and, on a follow-up, one answer per open id. A report that fails is `bad-output` or `wrong-target`, as with the helper.
+4. Accept the report only when every check below passes, the same list the helper runs. A report that fails is `bad-output` (or `wrong-target` for the last two checks), as with the helper.
+   - It is JSON that fits [the schema](bugs.schema.json), with a non-empty `scope.checked` and a Boolean `target_ok`.
+   - Every finding has a unique id that `--open-ids` would accept, and its `verdict` is null.
+   - Initial: `answers` is empty. Follow-up: exactly one answer per open id, no repeat, no extra id, and no id that is both listed in `bugs` and answered `fixed` or `rejected`.
+   - `target_ok` is true.
+   - Spec: `base` is null and `reviewed_head` is the bundle's sha256. Final: `reviewed_head` and `base` are the round's head and base.
 
 `run.json` fields:
 

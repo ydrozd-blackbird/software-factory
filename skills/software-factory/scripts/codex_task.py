@@ -247,11 +247,13 @@ def ids_ok(data, args):
         return not any(a["status"] != "open" and a["id"] in seen for a in answers)
     return True
 
-def check_output(args, head, base, resolved, path=None):
+def check_output(args, head, base, resolved, text=None):
     """Return the exit code for a run where codex exited 0 with no failure event.
-    `resolved` is the schema that was passed to Codex. `path` is the report, by default --out."""
+    `resolved` is the schema that was passed to Codex. `text` is the report; by default it is read from --out."""
     try:
-        with open(path or args.out, encoding="utf-8") as f: data = json.loads(f.read())
+        if text is None:
+            with open(args.out, encoding="utf-8") as f: text = f.read()
+        data = json.loads(text)
     except (ValueError, OSError):
         return 7
     if not isinstance(data, dict) or not valid(data, resolved, resolved) or not isinstance(data.get("bugs"), list):
@@ -309,9 +311,14 @@ HELD = {}  # lock path -> the open file that holds its flock while this process 
 def lock_file(dirname, data):
     """A temp file with the lock data and an flock on it. Return (temp path, fd); the caller keeps or closes fd."""
     fd, tmp = tempfile.mkstemp(prefix=".lock-", dir=dirname)
-    try: fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError: pass  # no flock on this filesystem: the pid and age rules still apply
-    os.write(fd, json.dumps(data).encode("utf-8"))
+    try:
+        try: fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError: pass  # no flock on this filesystem: the pid and age rules still apply
+        os.write(fd, json.dumps(data).encode("utf-8"))
+    except BaseException:
+        os.close(fd)
+        rm(tmp)
+        raise
     return tmp, fd
 
 def hold(path, fd):
@@ -321,20 +328,22 @@ def hold(path, fd):
         os.close(old)
 
 def record_child(path, pid):
-    """Add the Codex child's pid and process-group id (the same) to the lock, in one atomic replace.
-    The new file is flocked before it replaces the old one, so the lock is held the whole time."""
+    """Add the Codex child's pid and process-group id (the same) to the lock, in one atomic replace. Return True if
+    it is recorded. The new file is flocked before it replaces the old one, so the lock is held the whole time."""
     try:
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
         tmp, fd = lock_file(os.path.dirname(path), dict(data, child_pid=pid, child_pgid=pid))
     except (OSError, ValueError, TypeError):
-        return
+        return False
     try:
         os.replace(tmp, path)
         hold(path, fd)
+        return True
     except OSError:
         os.close(fd)
         rm(tmp)
+        return False
 
 def write_lock(path, timeout):
     tmp, fd = lock_file(os.path.dirname(path), {"pid": os.getpid(), "host": socket.gethostname(), "start": time.time(),
@@ -524,20 +533,25 @@ def check_followup(args, rows, head):
 
 def reusable(last, args, head, base):
     """A finished report can stand in for this call only when it is the same subject and round, on the same head and
-    base, unchanged on disk, and it still passes every check a fresh report gets, with the current --open-ids."""
-    if not last or last.get("subject") != args.subject or last.get("round") != args.round:
-        return False
-    if last.get("head") != head or last.get("base") != base:
-        return False
-    out = last.get("out")
-    if not isinstance(out, str) or last.get("out_sha256") is None or sha_file(out) != last["out_sha256"]:
-        return False
+    base, unchanged on disk, and it still passes every check a fresh report gets, with the current --open-ids.
+    The report is read once: the bytes that are hashed are the bytes that are checked. It never raises."""
     try:
+        if not last or last.get("subject") != args.subject or last.get("round") != args.round:
+            return False
+        if last.get("head") != head or last.get("base") != base:
+            return False
+        out = last.get("out")
+        if not isinstance(out, str) or not isinstance(last.get("out_sha256"), str):
+            return False
+        with open(out, "rb") as f:
+            raw = f.read()
+        if hashlib.sha256(raw).hexdigest() != last["out_sha256"]:
+            return False
         with open(args.schema, encoding="utf-8") as f:
             resolved = resolve_schema(json.load(f))
-    except (OSError, ValueError, TypeError, KeyError):
+        return check_output(args, head, base, resolved, text=raw.decode("utf-8")) == 0
+    except Exception:  # a broken schema or report means "not reusable", never a crash
         return False
-    return check_output(args, head, base, resolved, path=out) == 0
 
 def record_fallback(args, factory):
     """Add one `fallback` row: the lead reviewed the subject with Opus after Codex failed. Nothing is launched.
@@ -677,14 +691,19 @@ def execute(args, ctx, tmp_root, lock):
         if p is None:
             code = 3
         else:
-            record_child(lock, p.pid)
             code = None
-            try:
-                so, stderr_text = p.communicate(prompt, timeout=args.timeout)
-            except subprocess.TimeoutExpired:
+            if not record_child(lock, p.pid):
+                # Without the child's group in the lock, a helper crash could free the lock while Codex still runs.
                 kill_group(p)
                 so, stderr_text = p.communicate()
-                code = 5
+                code, hint = 6, "other"
+            else:
+                try:
+                    so, stderr_text = p.communicate(prompt, timeout=args.timeout)
+                except subprocess.TimeoutExpired:
+                    kill_group(p)
+                    so, stderr_text = p.communicate()
+                    code = 5
             STATE["proc"] = None
             so, stderr_text = (so or b"").decode("utf-8", "replace"), (stderr_text or b"").decode("utf-8", "replace")
             info = parse_events(so)
