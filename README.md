@@ -92,7 +92,7 @@ The session you talk to is the lead. It dispatches agents, passes context betwee
 
 - **Status:** the lead posts a short TL;DR of the plan when it starts, after the spec, and whenever a stage finishes. Ask "where are we?" at any time to get a new one.
 - **Corrections:** reply with a change at any time. Packages that haven't started pick it up right away, and the lead restarts any package the change affects.
-- **Decisions:** if an agent needs a call only you can make, the lead asks with a safe default and keeps the other work going. If you don't answer within 30 minutes, it uses the default, which never waives a safety rule.
+- **Decisions:** if an agent needs a call only you can make, the lead asks with a safe default and keeps the other work going. If you don't answer within 30 minutes, it uses the default, which never waives a safety rule. Only a question about a critical or high bug pauses that package; smaller questions are asked while the package finishes on the default.
 - **Interruptions:** if the network drops or the session ends, open Claude Code in the repo again. A start-up hook spots the unfinished run and Claude offers to continue it, so just say "resume". `claude --continue` reopens the original session, which is fastest because finished agents come back from cache. The run's status is kept in `.factory/run.json`, and finished packages aren't redone.
 
 ## What you get
@@ -114,6 +114,7 @@ The session you talk to is the lead. It dispatches agents, passes context betwee
     }
   }
   ```
+- **Data outside the repo:** if agents need a data export or a database copy, the factory asks you to allow its folder at the start. It loads a database copy into its own local database, so testers never read the original, and deletes any copied files at cleanup.
 - **Machine:** the factory measures RAM, CPU, and disk to choose how many lanes to run, and it mocks what it can to fit more.
 - **Status:** this is an early release with little real-world use. The worktree script, git steps, and agent loop have been checked in a throwaway repo with stubbed agents.
 

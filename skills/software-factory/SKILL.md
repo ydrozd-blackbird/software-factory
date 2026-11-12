@@ -33,9 +33,11 @@ You are the **lead**. You dispatch, pass context between teams, and verify. Prod
 
 1. If this isn't a git repo, run `git init` and make an empty first commit.
 2. Add `.factory/` to `.git/info/exclude`.
-3. If `.factory/run.json` exists and its `phase` isn't `complete`, this is a resume: go to section 10. Otherwise write `run.json` with `started` (from `date -u +%Y-%m-%dT%H:%M:%SZ`), `feature`, `base`, `workers` (`haiku` unless the user asked for Sonnet), and `phase: "start"`.
+3. If `.factory/run.json` exists and its `phase` isn't `complete`, this is a resume: go to section 10. Otherwise write `run.json` with `started` (from `date -u +%Y-%m-%dT%H:%M:%SZ`), `feature`, `base`, `workers` (`haiku` unless the user asked for Sonnet), `sessions: ["${CLAUDE_SESSION_ID}"]`, and `phase: "start"`. The ledger uses `sessions` to find every agent in the run.
 
 **Pre-flight:** agents work in `<repo>-lanes/`, outside the folder the session opened in, so their edits there can prompt too. Check `.claude/settings.local.json` and `~/.claude/settings.json`. If the lanes folder isn't an allowed directory, ask the user once in your first reply to add this to `.claude/settings.local.json`, with real absolute paths and the repo's package manager. Never edit permission settings yourself. Start research while you wait, since it only reads the repo and writes to `.factory/`.
+
+**Data outside the repo:** list every path outside the repo and the lanes folder that agents will read, such as attached files, a data export, or a database copy, and add each to `additionalDirectories` in the same request. Auto mode can still refuse agents access to data that looks like customer records, so don't point testers at it. Load a database copy into the `base` database during setup, so lanes clone it and testers only query their own lane's database. Copy other test files into `<repo>-lanes/data/`, and tell the user what you copied, since cleanup deletes it.
 
 ```json
 {
@@ -168,7 +170,8 @@ const LADDER = args.workers === 'sonnet'
   : [['haiku', 'medium'], ['sonnet', 'medium'], ['sonnet', 'high']]
 const rung = cycle => LADDER[Math.min(cycle, LADDER.length) - 1]
 const proven = r => r.ran.app_started || r.ran.tests.passed + r.ran.tests.failed > 0
-const blocking = r => r.ran.tests.failed > 0 || r.bugs.some(b => ['critical', 'high'].includes(b.severity))
+const severe = b => ['critical', 'high'].includes(b.severity)
+const blocking = r => r.ran.tests.failed > 0 || r.bugs.some(severe)
 const results = [], failed = new Set()
 const runPackage = async (p, lane) => {
   const reports = []
@@ -186,7 +189,7 @@ const runPackage = async (p, lane) => {
     const report = await agent(testPrompt(p, lane, reports.at(-1)), { model: 'sonnet', effort: 'medium', schema: BUGS, label: `${p.id} test ${cycle}`, phase: 'Test' })
     if (!report) return finish('unverified')
     reports.push(report)
-    if (report.bugs.some(b => b.decision)) return finish('needs-decision')
+    if (report.bugs.some(b => b.decision && severe(b))) return finish('needs-decision')  // other questions don't stop the package
     if (blocking(report)) continue
     return finish(proven(report) ? 'clean' : 'unverified')
   }
@@ -213,10 +216,10 @@ git switch -q factory/<package> 2>/dev/null || git switch -qc factory/<package> 
 ```
 
 - **Implementer prompt:** absolute paths to `SPEC.md` and the lane, the package text, owned files, the done-check, the tester's last report, and "write tests for your package; commit only your files on the package branch. Finish within 20 minutes. Never wait more than 10 minutes on one command: run it in the background with its output in `.factory/tmp/`, commit what you have, and say what's still running. Commit after each working step, since an outage loses anything uncommitted."
-- **Tester prompt:** absolute lane path, port, acceptance criteria, and "restart the app on the latest commit, run the tests and drive the feature, reproduce each bug twice, cite evidence, do not edit code. Report every command you ran. If the app won't start or tests can't run, report that as a critical bug. Report within 5 minutes of the done-check passing, and drive the UI at most twice. If a blocking bug from the last report is still there, or fixing it needs a `CLAUDE.md` rule changed, a safety test removed, or work outside the package, set `decision` on that bug to a question for the user with a safe default."
+- **Tester prompt:** absolute lane path, port, acceptance criteria, and "restart the app on the latest commit, run the tests and drive the feature, reproduce each bug twice, cite evidence, do not edit code. Report every command you ran. If the app won't start or tests can't run, report that as a critical bug. Report within 5 minutes of the done-check passing, and drive the UI at most twice. If a blocking bug from the last report is still there, or fixing it needs a `CLAUDE.md` rule changed, a safety test removed, or work outside the package, set `decision` on that bug to a question for the user with a safe default. If a permission prompt or auto mode refuses a command, don't work around it: report a critical bug with the refused command as evidence and a `decision` asking the user to allow it."
 - **`BUGS` schema:** `{ran: {app_started, commands: [], tests: {passed, failed, skipped}}, bugs: [{title, severity: critical|high|medium|low, repro, expected, actual, evidence, files, decision?}]}`
 - **Severity:** the next build cycle fixes critical and high bugs and failing tests. Medium and low bugs are logged, not fixed.
-- **Exit:** no blocking bugs with proof that testing ran, or max cycles, whichever comes first. A report with no proof is `unverified`. `unverified`, `needs-decision`, and `blocked` packages never count as clean or get merged. Packages depending on them are `blocked` too.
+- **Exit:** no blocking bugs with proof that testing ran, or max cycles, whichever comes first. A report with no proof is `unverified`. `unverified`, `needs-decision`, and `blocked` packages never count as clean or get merged. Packages depending on them are `blocked` too. A `decision` on a medium or low bug never stops a package: the package finishes on the default, and the lead adds the question to `STEER.md` as `pending` and asks the user. If the answer differs from the default, steering reruns that package.
 - **Hung agents and outages:** `agent()` returns `null` only after the API gives up, which has taken 48-141 minutes in a network outage. While a workflow runs, check every 15 minutes with `Monitor`. Transcripts are in `~/.claude/projects/<cwd with each non-alphanumeric as ->/<session id>/subagents/workflows/<runId>/`: one `agent-*.jsonl` per agent, and `journal.jsonl` with one JSON line per agent start and result. An agent whose transcript hasn't changed in 15 minutes is hung, so `TaskStop` the workflow and relaunch it with `resumeFromRunId`. Finished agents come back from cache, and only running ones restart. The same check reads new test results in `journal.jsonl` and asks the user about any `decision` right away. Afterwards, run a follow-up workflow over `unverified` and answered `needs-decision` packages; each resumes on its own branch.
 
 ## 6. Merge and accept
@@ -248,7 +251,7 @@ Run cleanup once the PR is open, or when the run stops for good, but not while i
 2. For lanes 1 and up, delete the lane's `.env` copies, then run `git worktree remove <path>`. If it refuses, inspect the worktree, keep it, and report it.
 3. Run `git -C <lane 0 path> branch -d factory/<package>` for each package. Git refuses unmerged branches; keep those and report them.
 4. Remove lane 0 the same way, last, keeping the `$FEATURE` branch.
-5. Delete `<repo>-lanes/.secrets.env`, remove the `<repo>-lanes/` folder if it's empty, then delete `.factory/tmp/` and `.factory/manifest`.
+5. Delete `<repo>-lanes/.secrets.env` and `<repo>-lanes/data/`, remove the `<repo>-lanes/` folder if it's empty, then delete `.factory/tmp/` and `.factory/manifest`.
 
 ## 9. Ledger and report
 
@@ -257,6 +260,8 @@ Generate the agent ledger, even after a failed run. The ledger is meant to be sh
 ```bash
 python3 <skill base directory>/scripts/ledger.py --factory .factory --title "<name> Agent Ledger"
 ```
+
+It reads agents from the sessions in `run.json` and from any session holding the run's workflows, so run it from the lead session; it falls back to the newest session in the folder only with a warning.
 
 The ledger shows the size, the minutes from invocation to first product commit, and the estimated cost at API list prices by phase, package, and agent. Use it to judge whether Sonnet workers or Fable specs pay off on a repo. Targets are 15 on S and 30 on M. Both size limits and targets are starting guesses, so adjust them when a repo's ledgers show they're off.
 
@@ -268,7 +273,7 @@ If the `Artifact` tool is available, publish `.factory/LEDGER.html` as it is and
 
 Resume on `/blackbird:software-factory resume`, when the user says resume or continue, or whenever the skill starts and `run.json` shows a `phase` other than `complete`. The plugin's start-up hook tells you when a session opens in a repo with an unfinished run. Post a TL;DR of where the run stopped, then:
 
-1. Read `run.json`, `results.jsonl`, and `STEER.md`. Run `git for-each-ref refs/heads/factory/` and `git log $BASE..$FEATURE` to see which packages are committed and merged.
+1. Read `run.json`, `results.jsonl`, and `STEER.md`, and add `${CLAUDE_SESSION_ID}` to `sessions` if it's missing. Run `git for-each-ref refs/heads/factory/` and `git log $BASE..$FEATURE` to see which packages are committed and merged.
 2. Run `git worktree prune`, then recreate the lanes in `manifest` with `lane.sh`, taking `DB_URL` from `.secrets.env`. Work that wasn't committed in a lost lane is gone.
 3. In the same session, relaunch the last workflow with `resumeFromRunId`. In a new session, start the build workflow with only the waves and packages that aren't `clean`, plus `workers`, as its `args`, leaving `packages.json` as it is. A package that already has a branch continues on it, because the package-start commands switch to the existing branch.
 4. Update `run.json` before dispatching anything.

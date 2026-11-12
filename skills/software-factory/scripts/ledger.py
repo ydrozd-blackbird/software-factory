@@ -27,18 +27,39 @@ def parse_time(value):
     return dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
-def find_session(args):
+def find_sessions(args, run):
+    """Session folders that ran this factory: named ones, the lead's own, and any holding its workflows."""
     if args.session_dir:
-        return args.session_dir
+        return [args.session_dir]
     config = os.environ.get("CLAUDE_CONFIG_DIR", os.path.expanduser("~/.claude"))
-    project = os.path.join(config, "projects", re.sub(r"[^A-Za-z0-9]", "-", os.getcwd()))
-    if args.session_id:
-        return os.path.join(project, args.session_id)
-    # The running session is the transcript written to most recently.
+    root = os.path.join(config, "projects")
+    ids = list(args.session_id or [])
+    if not ids:
+        # run.json lists every session that led the run; without it, assume the lead runs this script.
+        ids = [s for s in run.get("sessions") or [] if isinstance(s, str)] or [os.environ.get("CLAUDE_CODE_SESSION_ID", "")]
+    found = []
+    def add(folder):
+        if os.path.isdir(folder) and folder not in found:
+            found.append(folder)
+    for sid in ids:
+        if re.fullmatch(r"[A-Za-z0-9-]+", sid or ""):
+            for folder in glob.glob(os.path.join(root, "*", sid)):
+                add(folder)
+    for workflow in run.get("workflows") or []:
+        run_id = workflow.get("runId") if isinstance(workflow, dict) else None
+        if re.fullmatch(r"[A-Za-z0-9_-]+", run_id or ""):
+            for folder in glob.glob(os.path.join(root, "*", "*", "subagents", "workflows", run_id)):
+                add(os.path.dirname(os.path.dirname(os.path.dirname(folder))))
+    if found:
+        return found
+    # Last resort: the transcript written most recently for this directory, which may be another session.
+    project = os.path.join(root, re.sub(r"[^A-Za-z0-9]", "-", os.getcwd()))
     logs = sorted(glob.glob(project + "/*.jsonl"), key=os.path.getmtime)
     if not logs:
-        sys.exit(f"No session transcripts in {project}. Pass --session-dir.")
-    return logs[-1][: -len(".jsonl")]
+        sys.exit(f"No session found for this run in {root}. Pass --session-dir or --session-id.")
+    print(f"Warning: no session recorded for this run; using the newest one in {project}. "
+          "Pass --session-id if that's wrong.", file=sys.stderr)
+    return [logs[-1][: -len(".jsonl")]]
 
 
 def read_agent(path):
@@ -99,9 +120,11 @@ def total_cost(rows):
     return sum(priced) if priced else None
 
 
-def collect(session, since):
+def collect(sessions, since):
     agents = {}
-    for journal in glob.glob(session + "/subagents/workflows/*/journal.jsonl"):
+    journals = [j for session in sessions for j in glob.glob(session + "/subagents/workflows/*/journal.jsonl")]
+    directs = [a for session in sessions for a in glob.glob(session + "/subagents/agent-*.jsonl")]
+    for journal in journals:
         folder = os.path.dirname(journal)
         for line in open(journal, errors="ignore"):
             try:
@@ -113,7 +136,7 @@ def collect(session, since):
             path = os.path.join(folder, f"agent-{row['agentId']}.jsonl")
             if os.path.exists(path):
                 agents[path] = (row.get("label") or row["agentId"], row.get("phase") or "Workflow")
-    for path in glob.glob(session + "/subagents/agent-*.jsonl"):
+    for path in directs:
         meta = path[: -len(".jsonl")] + ".meta.json"
         label = os.path.basename(path)[6:-6]
         try:
@@ -478,8 +501,8 @@ table{{border-collapse:collapse;width:100%;font-size:13px;min-width:700px}}th,td
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--factory", help="A .factory folder: fills --since, --base, --feature, --pr, --size-file, --summary, --results, --out, and --json")
-    parser.add_argument("--session-dir", help="Session folder; defaults to the newest session for this directory")
-    parser.add_argument("--session-id", help="Session id, when several sessions share this directory")
+    parser.add_argument("--session-dir", help="One session folder to read instead of finding them")
+    parser.add_argument("--session-id", action="append", help="A session id to read; repeat for several. Defaults to run.json sessions, the current session, and sessions holding the run's workflows")
     parser.add_argument("--since", help="ISO time; ignore agents that started earlier")
     parser.add_argument("--results", help="JSON list of package results from the build loop")
     parser.add_argument("--title", default="Agent Ledger")
@@ -491,8 +514,8 @@ def main():
     parser.add_argument("--summary", help="SUMMARY.md: the lead's plain-language account of the work, shown in the TL;DR")
     parser.add_argument("--pr", help="Pull request URL for the TL;DR")
     args = parser.parse_args()
+    run = {}
     if args.factory:
-        run = {}
         try:
             run = json.load(open(os.path.join(args.factory, "run.json")))
         except (OSError, ValueError):
@@ -508,10 +531,10 @@ def main():
         args.pr = args.pr or (run.get("pr") if isinstance(run.get("pr"), str) else None)
     args.out = args.out or ".factory/LEDGER.html"
 
-    session = find_session(args)
-    rows = collect(session, args.since)
+    sessions = find_sessions(args, run)
+    rows = collect(sessions, args.since)
     if not rows:
-        sys.exit(f"No agents found in {session}" + (f" since {args.since}" if args.since else ""))
+        sys.exit(f"No agents found in {', '.join(sessions)}" + (f" since {args.since}" if args.since else ""))
     results = read_results(args.results)
     sizes = read_sizes(args.size_file)
     first_commit = first_commit_minutes(args.base, args.feature, args.since)
