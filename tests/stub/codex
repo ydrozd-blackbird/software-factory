@@ -1,0 +1,81 @@
+#!/bin/bash
+# Stub codex for tests. It never contacts a network.
+# Config comes from files next to this script, because the helper drops most env vars:
+#   mode  (ok|quota_noise|limit|hang|fail|badjson|shape|wrongtarget|stalehead|slow|freetext|
+#          auth|stray429|ratelimit|noscope|noanswers|bugnoid|badanswer|answered|answered2|dupanswers|extraanswer|
+#          errorevent|errorlimit|extrakey|contradict|contradictrej|stillopen)
+#   errorevent and errorlimit print an `error` event, write a good report and exit 0.
+#   base (optional) holds the value the stub reports as `base`; without it the report has base null.
+#   reviewed_head (optional) holds the value reported as `reviewed_head`; without it the stub uses git HEAD of -C.
+# The stub writes args.txt (argv, one per line), env.txt (env key names), pid (hang mode),
+# stdin.txt (the prompt), and schema_path.txt and schema_copy.json (the --output-schema path and a copy of that file).
+d="$(cd "$(dirname "$0")" && pwd)"
+mode="ok"
+[ -f "$d/mode" ] && mode="$(cat "$d/mode")"
+: > "$d/args.txt"
+for a in "$@"; do printf '%s\n' "$a" >> "$d/args.txt"; done
+env | cut -d= -f1 | sort > "$d/env.txt"
+rm -f "$d/schema_path.txt" "$d/schema_copy.json"
+out=""; cdir="."; prev=""
+for a in "$@"; do
+  [ "$prev" = "-o" ] && out="$a"
+  [ "$prev" = "-C" ] && cdir="$a"
+  if [ "$prev" = "--output-schema" ]; then printf '%s\n' "$a" > "$d/schema_path.txt"; cp "$a" "$d/schema_copy.json"; fi
+  prev="$a"
+done
+cat > "$d/stdin.txt"
+ok_events() {
+  echo '{"type":"thread.started","thread_id":"stub-thread-1"}'
+  echo '{"type":"turn.completed","usage":{"input_tokens":10,"cached_input_tokens":2,"output_tokens":5,"reasoning_output_tokens":1,"cache_write_input_tokens":3}}'
+  echo '{"type":"turn.completed","usage":{"input_tokens":10,"cached_input_tokens":2,"output_tokens":5,"reasoning_output_tokens":1,"cache_write_input_tokens":3}}'
+}
+if [ -f "$d/reviewed_head" ]; then rh="$(cat "$d/reviewed_head")"; else rh="$(git -C "$cdir" rev-parse HEAD 2>/dev/null)"; fi
+bv="null"
+[ -f "$d/base" ] && bv='"'"$(cat "$d/base")"'"'
+good='{"provider":"codex","model":"stub","base":'"$bv"',"reviewed_head":"'"$rh"'","scope":{"checked":["diff"],"unchecked":[]},"bugs":[],"answers":[],"target_ok":true}'
+noscope='{"provider":"codex","model":"stub","base":'"$bv"',"reviewed_head":"'"$rh"'","scope":{"checked":[],"unchecked":[]},"bugs":[],"answers":[],"target_ok":true}'
+stale='{"provider":"codex","model":"stub","base":'"$bv"',"reviewed_head":"0000000000000000000000000000000000000000","scope":{"checked":["diff"],"unchecked":[]},"bugs":[],"answers":[],"target_ok":true}'
+noanswers='{"provider":"codex","model":"stub","base":'"$bv"',"reviewed_head":"'"$rh"'","scope":{"checked":["diff"],"unchecked":[]},"bugs":[],"target_ok":true}'
+bugitem='"title":"t","severity":"low","repro":"r","expected":"e","actual":"a","evidence":"v","files":[],"verdict":null'
+head_part='{"provider":"codex","model":"stub","base":'"$bv"',"reviewed_head":"'"$rh"'","scope":{"checked":["diff"],"unchecked":[]},'
+bugnoid="$head_part"'"bugs":[{'"$bugitem"'}],"answers":[],"target_ok":true}'
+badanswer="$head_part"'"bugs":[],"answers":[{"id":"F1","status":"maybe","evidence":"x"}],"target_ok":true}'
+answered="$head_part"'"bugs":[{"id":"F2",'"$bugitem"'}],"answers":[{"id":"F1","status":"fixed","evidence":"x"}],"target_ok":true}'
+answered2="$head_part"'"bugs":[],"answers":[{"id":"F1","status":"fixed","evidence":"x"},{"id":"F3","status":"open","evidence":"y"}],"target_ok":true}'
+dupanswers="$head_part"'"bugs":[],"answers":[{"id":"F1","status":"fixed","evidence":"x"},{"id":"F1","status":"open","evidence":"y"}],"target_ok":true}'
+contradict="$head_part"'"bugs":[{"id":"F1",'"$bugitem"'}],"answers":[{"id":"F1","status":"fixed","evidence":"x"}],"target_ok":true}'
+contradictrej="$head_part"'"bugs":[{"id":"F1",'"$bugitem"'}],"answers":[{"id":"F1","status":"rejected","evidence":"x"}],"target_ok":true}'
+stillopen="$head_part"'"bugs":[{"id":"F1",'"$bugitem"'}],"answers":[{"id":"F1","status":"open","evidence":"x"}],"target_ok":true}'
+extraanswer="$head_part"'"bugs":[],"answers":[{"id":"F1","status":"fixed","evidence":"x"},{"id":"F9","status":"open","evidence":"y"}],"target_ok":true}'
+extrakey='{"provider":"codex","model":"stub","base":'"$bv"',"reviewed_head":"'"$rh"'","scope":{"checked":["diff"],"unchecked":[]},"bugs":[],"answers":[],"target_ok":true,"extra":1}'
+case "$mode" in
+  ok) ok_events; echo "$good" > "$out" ;;
+  quota_noise) ok_events; echo "quota 429" >&2; echo "$good" > "$out" ;;
+  limit) echo '{"type":"error","message":"You'"'"'ve hit your usage limit"}'; exit 1 ;;
+  ratelimit) echo '{"type":"error","message":"Rate limit reached"}'; exit 1 ;;
+  auth) echo '{"type":"turn.failed","message":"401 Unauthorized"}'; exit 1 ;;
+  stray429) echo 'request id 429abc failed' >&2; echo '{"type":"turn.failed","message":"boom"}'; exit 1 ;;
+  hang) echo $$ > "$d/pid"; sleep 30 ;;
+  fail) echo '{"type":"turn.failed","message":"boom"}'; exit 1 ;;
+  badjson) ok_events; echo "not json" > "$out" ;;
+  shape) ok_events; echo '{"provider":"codex"}' > "$out" ;;
+  wrongtarget) ok_events; echo '{"provider":"codex","bugs":[],"scope":{"checked":["diff"]},"target_ok":false}' > "$out" ;;
+  stalehead) ok_events; echo "$stale" > "$out" ;;
+  slow) sleep 2; ok_events; echo "$good" > "$out" ;;
+  freetext) ok_events; echo "Looks fine. No bugs." > "$out" ;;
+  noscope) ok_events; echo "$noscope" > "$out" ;;
+  noanswers) ok_events; echo "$noanswers" > "$out" ;;
+  bugnoid) ok_events; echo "$bugnoid" > "$out" ;;
+  badanswer) ok_events; echo "$badanswer" > "$out" ;;
+  answered) ok_events; echo "$answered" > "$out" ;;
+  answered2) ok_events; echo "$answered2" > "$out" ;;
+  dupanswers) ok_events; echo "$dupanswers" > "$out" ;;
+  contradict) ok_events; echo "$contradict" > "$out" ;;
+  contradictrej) ok_events; echo "$contradictrej" > "$out" ;;
+  stillopen) ok_events; echo "$stillopen" > "$out" ;;
+  extraanswer) ok_events; echo "$extraanswer" > "$out" ;;
+  extrakey) ok_events; echo "$extrakey" > "$out" ;;
+  errorevent) echo '{"type":"error","message":"stream broke"}'; ok_events; echo "$good" > "$out" ;;
+  errorlimit) echo '{"type":"error","message":"You'"'"'ve hit your usage limit"}'; ok_events; echo "$good" > "$out" ;;
+esac
+exit 0

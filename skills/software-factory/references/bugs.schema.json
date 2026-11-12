@@ -1,0 +1,164 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "BUGS",
+  "description": "Review report from the reviewer. The reviewer leaves verdict null. The lead sets it. For the Spec gate, base is null and reviewed_head is the sha256 of the bundle. Set target_ok to false when HEAD is not the head you were given, and return no bugs then. A wrong-target review is a failed review, never a pass. Every bug has an id (F1, F2 and so on). A follow-up keeps the ids of the open findings and answers each one in answers. In an initial round answers is an empty array.",
+  "type": "object",
+  "$ref": "#/$defs/BUGS",
+  "$defs": {
+    "BUGS": {
+      "type": "object",
+      "properties": {
+        "provider": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "base": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reviewed_head": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "target_ok": {
+          "type": "boolean"
+        },
+        "scope": {
+          "type": "object",
+          "properties": {
+            "checked": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1
+            },
+            "unchecked": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "checked",
+            "unchecked"
+          ],
+          "additionalProperties": false
+        },
+        "bugs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              },
+              "severity": {
+                "type": "string",
+                "enum": [
+                  "critical",
+                  "high",
+                  "medium",
+                  "low"
+                ]
+              },
+              "repro": {
+                "type": "string"
+              },
+              "expected": {
+                "type": "string"
+              },
+              "actual": {
+                "type": "string"
+              },
+              "evidence": {
+                "type": "string"
+              },
+              "files": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "verdict": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "enum": [
+                  "confirmed",
+                  "rejected",
+                  "unverified",
+                  null
+                ]
+              }
+            },
+            "required": [
+              "id",
+              "title",
+              "severity",
+              "repro",
+              "expected",
+              "actual",
+              "evidence",
+              "files",
+              "verdict"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "answers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "fixed",
+                  "open",
+                  "rejected"
+                ]
+              },
+              "evidence": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "status",
+              "evidence"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "provider",
+        "model",
+        "base",
+        "reviewed_head",
+        "target_ok",
+        "scope",
+        "bugs",
+        "answers"
+      ],
+      "additionalProperties": false,
+      "title": "BUGS",
+      "description": "Review report. See the root description for the verdict and target rules."
+    }
+  }
+}
