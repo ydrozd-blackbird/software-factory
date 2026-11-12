@@ -99,7 +99,15 @@ The session you talk to is the lead. It dispatches agents, passes context betwee
 
 - **A pull request** whose description stands alone: what changed, how it was tested, and any open bugs. It's a draft if anything couldn't be verified.
 - **A tidy `.factory/` folder**, kept out of git, with the brief, spec, results, and status. The factory deletes its worktrees, scratch files, and secrets file when it finishes.
-- **An agent ledger**, published as a private Claude artifact where that's available and saved to `.factory/LEDGER.html` either way. It opens with a TL;DR you can share: a plain-language summary of the work, its size against the S/M/L scale, the files, lines, and commits it changed, the areas of the code touched, and the PR link. Below that it shows every agent's model, timing, tokens, tool calls, and estimated cost at API list prices from Claude Code's own records, along with the size, the minutes to first commit, cost by phase, and each package's outcome and cost. It never includes prompts or agent output.
+- **An agent ledger**, published as a private Claude artifact where that's available and saved to `.factory/LEDGER.html` either way. It opens with a TL;DR you can share: a plain-language summary of the work, its size against the S/M/L scale, the files, lines, and commits it changed, the areas of the code touched, and the PR link. Below that it shows every agent's model, timing, tokens, tool calls, and estimated cost at API list prices from Claude Code's own records, along with the size, the minutes to first commit, cost by phase, and each package's outcome and cost. It never includes prompts or agent output. With cross review, it also shows Codex rows from `.factory/codex-runs.jsonl`, and marks a cost that rests on an unverified price as an estimate.
+
+## Cross review
+
+By default one provider reviews everything, and the factory never calls OpenAI Codex. To have the other provider review the work, say "cross review" or "review with codex" in your request. Codex then reviews the spec and the final diff, and does one follow-up after a fix, so Codex has the last review. Every finding has an id, and the follow-up answers each open id. A later run in the same repo gets its own review budget. The lead still checks every finding and decides whether the pull request is a draft or ready.
+
+Cross review needs the Codex CLI, signed in, or a review bridge that your `CLAUDE.md` names. If Codex is missing, the run uses one provider and says why. If Codex fails or hits its limit, Opus reviews instead, the report says so, and the pull request stays a draft. Codex runs read-only, but the sandbox limits writes, not reads. It can read any file you can read, and it sends what it reads to OpenAI. The first reply lists what each gate's bundle holds. Before each gate the lead checks the repo and the lanes for env files and secrets, and stops cross review for that gate until you confirm if it finds any. One gate uses one transport, the CLI or a bridge, for both of its rounds. If the lead cannot check a gate's review record, the pull request stays a draft.
+
+More detail: [the cross review page](skills/software-factory/references/cross-provider.md) and [the model comparison](docs/model-comparison.md).
 
 ## Before you run it
 
@@ -121,13 +129,18 @@ The session you talk to is the lead. It dispatches agents, passes context betwee
 ## Layout
 
 ```text
-skills/software-factory/SKILL.md   The skill
-skills/software-factory/scripts/   Agent ledger generator
-hooks/                             Start-up hook that reports unfinished runs
-.claude-plugin/                    Claude Code plugin files
-software-factory-map.html          Full visual walkthrough
-docs/factory-line.png              Diagram used in this README
+skills/software-factory/SKILL.md          The skill
+skills/software-factory/scripts/          Agent ledger generator and codex_task.py
+skills/software-factory/references/       Cross review page and review schema
+tests/                                    Unit tests
+hooks/                                    Start-up hook that reports unfinished runs
+.claude-plugin/                           Claude Code plugin files
+software-factory-map.html                 Full visual walkthrough
+docs/factory-line.png                     Diagram used in this README
+docs/model-comparison.md                  Claude and Codex models and prices
 ```
+
+Run the tests with `python3 -m unittest discover -s tests`.
 
 ## License
 

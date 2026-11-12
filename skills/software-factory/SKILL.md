@@ -19,6 +19,8 @@ You are the **lead**. You dispatch, pass context between teams, and verify. Prod
 
 **Workers:** builders start on Haiku by default. If the user asks for Sonnet workers, such as "use sonnet workers", set `workers: "sonnet"` in `run.json` and in the build workflow's `args`; every build cycle then runs on Sonnet. A change mid-run applies from the next workflow. The `haiku` alias means Haiku 5.5 only on the Anthropic API with Claude Code 2.1.293 or later; on Bedrock, Google Cloud, Microsoft Foundry, or Claude Platform on AWS it still means Haiku 4.5, so suggest Sonnet workers there.
 
+**Review:** by default one provider does every review (`review: "single"`), and the factory never calls Codex. If the user asks for a mixed or cross review, such as "cross review" or "review with codex", set `review: "cross"` in `run.json`. Then the other provider reviews the spec draft (the Spec gate) and the final diff (the Final gate), and does the one follow-up after a fix. In Claude Code the other provider is Codex, so Codex has the last review. If the skill runs in Codex, Claude is the reviewer. You still set a verdict on every finding and decide draft or ready. You run both gates in your own session, not in a workflow. The call, the limits, and the fallback are in [references/cross-provider.md](references/cross-provider.md).
+
 **Every lane prompt starts with:** "`cd <lane>` and run `git rev-parse --show-toplevel`. If it doesn't print `<lane>`, stop and report it." Agents start in the user's checkout, so this keeps them out of it. **Every agent prompt ends with:** "Before each step, read `<repo>/.factory/STEER.md`. Its entries override the spec. Keep each shell command to one simple line. Put anything longer, or anything with nested quotes, `$(...)`, or JSON, in a script under `<repo>/.factory/tmp/` and run it with `bash <path>`. Send JSON request bodies from files with `curl -d @<file>`." Claude Code asks before running a command it can't parse, even in permissive modes, and that prompt stalls the agent until the user answers.
 
 ## Keep the user in the loop
@@ -33,7 +35,7 @@ You are the **lead**. You dispatch, pass context between teams, and verify. Prod
 
 1. If this isn't a git repo, run `git init` and make an empty first commit.
 2. Add `.factory/` to `.git/info/exclude`.
-3. If `.factory/run.json` exists and its `phase` isn't `complete`, this is a resume: go to section 10. Otherwise write `run.json` with `started` (from `date -u +%Y-%m-%dT%H:%M:%SZ`), `feature`, `base`, `workers` (`haiku` unless the user asked for Sonnet), `sessions: ["${CLAUDE_SESSION_ID}"]`, and `phase: "start"`. The ledger uses `sessions` to find every agent in the run.
+3. If `.factory/run.json` exists and its `phase` isn't `complete`, this is a resume: go to section 10. Otherwise write `run.json` with `started` (from `date -u +%Y-%m-%dT%H:%M:%SZ`), `feature`, `base`, `workers` (`haiku` unless the user asked for Sonnet), `review` (`single` unless the user asked for a cross review), `sessions: ["${CLAUDE_SESSION_ID}"]`, and `phase: "start"`. The ledger uses `sessions` to find every agent in the run. With `cross`, check for Codex now. If it's missing, use `single` and say why in your first reply. If it's there, say in your first reply what each gate's bundle holds, that the spec and the diff go to OpenAI, and that Codex can also read the repo, because its sandbox limits writes, not reads.
 
 **Pre-flight:** agents work in `<repo>-lanes/`, outside the folder the session opened in, so their edits there can prompt too. Check `.claude/settings.local.json` and `~/.claude/settings.json`. If the lanes folder isn't an allowed directory, ask the user once in your first reply to add this to `.claude/settings.local.json`, with real absolute paths and the repo's package manager. Never edit permission settings yourself. Start research while you wait, since it only reads the repo and writes to `.factory/`.
 
@@ -50,7 +52,7 @@ You are the **lead**. You dispatch, pass context between teams, and verify. Prod
 
 Update `run.json` at every phase change (`start`, `research`, `build`, `accept`, `pr`, `cleanup`, `complete`) and whenever a workflow starts or returns: set `phase` and `updated`, and keep a `workflows` list of `{runId, scriptPath, state}`, plus `pr`, `pending` decisions, the lane count, and `services`: the `base` database and any containers the factory started.
 
-**`.factory/` layout:** the lead writes `run.json`, `SIZE.md`, `BRIEF.md`, `STEER.md`, `BUGS.md`, `results.jsonl`, `SUMMARY.md`, and the ledger. The architect writes `SPEC.md` and `packages.json`, and researchers write `research/`. `lane.sh` writes `manifest`, and agents put scratch output and evidence in `tmp/`. Cleanup deletes `manifest` and `tmp/` and keeps the rest. Secrets never go in `.factory/` (section 3).
+**`.factory/` layout:** the lead writes `run.json`, `SIZE.md`, `BRIEF.md`, `STEER.md`, `BUGS.md`, `results.jsonl`, `SUMMARY.md`, and the ledger. The architect writes `SPEC.md` and `packages.json`, and researchers write `research/`. `lane.sh` writes `manifest`, agents put scratch output and evidence in `tmp/`, and with `cross` the review helper appends `codex-runs.jsonl`. Cleanup deletes `manifest` and `tmp/` and keeps the rest, including `codex-runs.jsonl`. A new run counts only the rows from its own `started` time. Secrets never go in `.factory/` (section 3).
 
 **Git Flow:** run `git fetch origin` if there's a remote, then set the branch names, following any conventions the repo already uses.
 
@@ -101,7 +103,7 @@ Dispatch one agent per angle below that has open questions from section 2, label
 - **Architect:** scalability, only as far as this task needs it
 - **Environment:** capacity, shared services, and lane setup (section 4); on L, always run this one
 
-An architect then writes `.factory/SPEC.md` from the brief and the findings. 1-2 critics attack it for safety and buildability, and check that everything in the brief is either covered or explicitly out of scope. Revise once. On M, the one critic edits the spec directly, and there's no separate revision. Don't wait for the critics: once the architect's draft exists, create lanes 0 and 1 and start the foundation build (section 5). Critics run alongside it and only change later waves. The spec must contain:
+An architect then writes `.factory/SPEC.md` from the brief and the findings. 1-2 critics attack it for safety and buildability, and check that everything in the brief is either covered or explicitly out of scope. Revise once. With `cross`, also run the Spec gate on a snapshot of the architect's draft. It runs alongside the critics and, like them, only changes later waves. The critic or architect applies the findings you confirm. On S there is no spec, so only the Final gate runs. On M, the one critic edits the spec directly, and there's no separate revision. Don't wait for the critics: once the architect's draft exists, create lanes 0 and 1 and start the foundation build (section 5). Critics run alongside it and only change later waves. The spec must contain:
 
 1. Decisions, reusing the repo's existing stack and patterns; anything new needs a stated reason
 2. Foundation: shared contracts, schema, and types, built first
@@ -236,10 +238,11 @@ The factory's deliverable is a PR a developer can review. A developer merges it;
 
 1. Run the repo's full build and test suite yourself in lane 0.
 2. Review `git diff $BASE...$FEATURE`. Confirm it has no env files, secrets, or stray artifacts.
-3. Run `git push -u origin $FEATURE` from lane 0 and open a PR into the Git Flow base with the repo's tool (`gh pr create`, `glab mr create`).
-4. Mark it ready for review only when step 1 passed and every package is `clean`. Otherwise open it as a draft.
+3. With `cross`, run the secret check of step 2 on the repo and the lanes before each gate. A lane `.secrets.env` or a tracked env file stops cross review for that gate until the user confirms. Then run the Final gate on `git diff $BASE...$FEATURE`. Have the Sonnet fixer fix each critical or high finding you didn't reject, on `$FEATURE` in lane 0. Then run steps 1 and 2 again. Run the one follow-up only after a confirmed critical or high finding was fixed. It answers each open finding id, and it uses the same transport and the same bridge tool name as the initial round (see `run.json` `reviews`), else the gate stays a draft.
+4. Run `git push -u origin $FEATURE` from lane 0 and open a PR into the Git Flow base with the repo's tool (`gh pr create`, `glab mr create`).
+5. Mark it ready for review only when step 1 passed, every package is `clean`, and with `cross` the Final gate is `clean` or `fixed`, its last round was a Codex review, and lane 0's head is the head of that round. Otherwise open it as a draft.
 
-The PR description must stand alone, because `.factory/` isn't committed. Include what changed and why, key decisions from the spec, the end of the build and test output, open medium and low bugs, anything `blocked` or `unverified`, and secrets or env vars to provision.
+The PR description must stand alone, because `.factory/` isn't committed. Include what changed and why, key decisions from the spec, the end of the build and test output, open medium and low bugs, anything `blocked` or `unverified`, and secrets or env vars to provision. With `cross`, name each gate's reviewer, model, revision, and status.
 
 If there's no remote, or the push or PR fails, keep the branch and put the reason in the report.
 
@@ -261,7 +264,7 @@ Generate the agent ledger, even after a failed run. The ledger is meant to be sh
 python3 <skill base directory>/scripts/ledger.py --factory .factory --title "<name> Agent Ledger"
 ```
 
-It reads agents from the sessions in `run.json` and from any session holding the run's workflows, so run it from the lead session; it falls back to the newest session in the folder only with a warning.
+It reads agents from the sessions in `run.json` and from any session holding the run's workflows, so run it from the lead session; it falls back to the newest session in the folder only with a warning. With `cross`, it also adds Codex rows from `.factory/codex-runs.jsonl`.
 
 The ledger shows the size, the minutes from invocation to first product commit, and the estimated cost at API list prices by phase, package, and agent. Use it to judge whether Sonnet workers or Fable specs pay off on a repo. Targets are 15 on S and 30 on M. Both size limits and targets are starting guesses, so adjust them when a repo's ledgers show they're off.
 
@@ -275,5 +278,5 @@ Resume on `/blackbird:software-factory resume`, when the user says resume or con
 
 1. Read `run.json`, `results.jsonl`, and `STEER.md`, and add `${CLAUDE_SESSION_ID}` to `sessions` if it's missing. Run `git for-each-ref refs/heads/factory/` and `git log $BASE..$FEATURE` to see which packages are committed and merged.
 2. Run `git worktree prune`, then recreate the lanes in `manifest` with `lane.sh`, taking `DB_URL` from `.secrets.env`. Work that wasn't committed in a lost lane is gone.
-3. In the same session, relaunch the last workflow with `resumeFromRunId`. In a new session, start the build workflow with only the waves and packages that aren't `clean`, plus `workers`, as its `args`, leaving `packages.json` as it is. A package that already has a branch continues on it, because the package-start commands switch to the existing branch.
+3. In the same session, relaunch the last workflow with `resumeFromRunId`. In a new session, start the build workflow with only the waves and packages that aren't `clean`, plus `workers`, as its `args`, leaving `packages.json` as it is. A package that already has a branch continues on it, because the package-start commands switch to the existing branch. With `cross`, `codex-runs.jsonl` keeps the review budget, so a resume never repeats a finished round.
 4. Update `run.json` before dispatching anything.

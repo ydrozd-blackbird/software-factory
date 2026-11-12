@@ -10,7 +10,7 @@
     {
       "name": "blackbird",
       "source": "./",
-      "description": "Software factory: turns one task into a tested feature branch and pull request, using teams of Opus, Haiku, and Sonnet agents."
+      "description": "Software factory: turns one task into a tested feature branch and pull request, using teams of Opus, Haiku, and Sonnet agents, with optional Codex cross review."
     }
   ]
 }
