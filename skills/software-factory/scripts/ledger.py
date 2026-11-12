@@ -18,6 +18,18 @@ PRICES = {
     "opus": ((4.0, 20.0, 0.20),),
     "fable": ((8.0, 40.0, 0.20),),
 }
+# OpenAI API list prices, read 2026-11-12. Subscription logins use plan limits instead.
+# USD per million tokens: input, output, cached input. None means cached input bills at
+# the input price. Luna's over-272K tier is not modelled: Codex usage is summed per turn,
+# so the size of each prompt is unknown. Luna costs may be low on long prompts.
+CODEX_PRICES = {
+    "gpt-6-astra": (10.0, 50.0, None),
+    "gpt-6.1-sol": (2.0, 10.0, None),
+    "gpt-6.1-terra": (1.0, 5.0, None),
+    "gpt-6-luna": (0.10, 0.50, 0.01),
+}
+# Prices that docs/model-comparison.md marks "unverified". A cost from one of them is an estimate on an unconfirmed price.
+UNVERIFIED_PRICES = {"gpt-6-astra", "gpt-6.1-terra"}
 LONG_PROMPT = 100_000
 IDLE_MINUTES = 10
 FIRST_COMMIT_TARGETS = {"S": 15, "M": 30}
@@ -109,6 +121,63 @@ def cost(model, usages):
         rate_in, rate_out, rate_read = tiers[1 if len(tiers) > 1 and prompt > LONG_PROMPT else 0]
         total += (fresh * rate_in + written * rate_in * 1.25 + read * rate_read + (u.get("output_tokens", 0) or 0) * rate_out) / 1e6
     return round(total, 4)
+
+
+def codex_cost(model, input_tokens, cached, output):
+    """Estimated USD at OpenAI list prices, or None for a model with no price.
+
+    Reasoning tokens are already inside output_tokens, so they are not added again.
+    """
+    prices = CODEX_PRICES.get(model or "")
+    if not prices:
+        return None
+    rate_in, rate_out, rate_cached = prices
+    cached = min(cached, input_tokens)
+    rate_cached = rate_in if rate_cached is None else rate_cached
+    return round(((input_tokens - cached) * rate_in + cached * rate_cached + output * rate_out) / 1e6, 10)
+
+
+def read_codex(factory, since):
+    """Rows from <factory>/codex-runs.jsonl that started at or after `since`.
+
+    Bad lines, stale-lock rows, attempt rows and fallback rows are skipped. A cancelled row still counts as a run. Only label, model, phase, times,
+    token counts and status are kept. The paths and hints in a row never leave here.
+    """
+    path = os.path.join(factory, "codex-runs.jsonl") if factory else None
+    if not path or not os.path.exists(path):
+        return []
+    cutoff = parse_time(since) if since else None
+    rows = []
+    for line in open(path, errors="ignore"):
+        try:
+            entry = json.loads(line)
+            if entry.get("status") in ("stale-lock", "attempt", "fallback"):
+                continue  # a note about a lock, a launch or an Opus fallback, not a Codex run; the run has its own row
+            begin, finish = entry["start"], entry.get("end") or entry["start"]
+            minutes = round((parse_time(finish) - parse_time(begin)).total_seconds() / 60, 1)
+            if cutoff and parse_time(begin) < cutoff:
+                continue
+            tokens = [int(entry.get(k) or 0) for k in ("input_tokens", "cached_input_tokens", "output_tokens")]
+        except (ValueError, KeyError, TypeError, AttributeError):
+            continue
+        model = str(entry.get("model") or "unknown")
+        rows.append({
+            "start": begin,
+            "end": finish,
+            "model": model,
+            "tool_calls": 0,
+            "input_tokens": tokens[0],
+            "cached_input_tokens": tokens[1],
+            "output_tokens": tokens[2],
+            "cost": codex_cost(model, *tokens),
+            "label": str(entry.get("label") or entry.get("task_id") or "codex"),
+            "phase": str(entry.get("phase") or "Review"),
+            "minutes": minutes,
+            "provider": "codex",
+            "status": str(entry.get("status") or ""),
+            "price_unverified": model in UNVERIFIED_PRICES,
+        })
+    return rows
 
 
 def money(value):
@@ -257,6 +326,11 @@ def family(model):
     return "other"
 
 
+def lane(row):
+    """Colour key for a row: 'codex' for Codex rows, else the Claude model family."""
+    return "codex" if row.get("provider") == "codex" else family(row["model"])
+
+
 def timeline(rows):
     """Phases as swimlanes on one time axis, with overlapping agents stacked.
 
@@ -296,7 +370,7 @@ def timeline(rows):
             tip = f"{row['label']}: {row['model']}, {row['minutes']} min, {row['tool_calls']} tool calls"
             marks.append(
                 f'<rect x="{x0:.1f}" y="{top + slot * (bar + gap)}" width="{x1 - x0:.1f}" height="{bar}" '
-                f'class="m-{family(row["model"])}"><title>{html.escape(tip)}</title></rect>'
+                f'class="m-{lane(row)}"><title>{html.escape(tip)}</title></rect>'
             )
         height = max(len(ends) * (bar + gap), 14) + 16
         marks.append(f'<text x="12" y="{y + 20}" class="lane">{html.escape(phase[:18])}</text>')
@@ -360,7 +434,10 @@ def tldr(rows, results, size_lines, change, summary, pr, span):
         clean = sum(1 for p in results if p.get("status") == "clean")
         facts.append(("Packages", f"{clean} of {len(results)} clean", "Built and tested in parallel lanes"))
     priced = total_cost(rows)
-    facts.append(("Effort", f"{len(rows)} agents", f"{duration(span)} of active time" + (f", about {money(priced)} at API list prices" if priced is not None else "")))
+    effort = f"{duration(span)} of active time" + (f", about {money(priced)} at API list prices" if priced is not None else "")
+    if any(r.get("price_unverified") and r.get("cost") is not None for r in rows):
+        effort += " (estimate, price unverified for some Codex rows)"
+    facts.append(("Effort", f"{len(rows)} agents", effort))
     cells = "".join(f"<div><span>{esc(k)}</span><b>{esc(v)}</b><small>{esc(d)}</small></div>" for k, v, d in facts)
     areas = ""
     if change and change["areas"]:
@@ -378,11 +455,14 @@ def render(rows, results, title, sizes=(), first_commit=None, top=""):
     esc = html.escape
     chart, span, skipped = timeline(rows)
     counts = {}
+    codex = [r for r in rows if r.get("provider") == "codex"]
     for row in rows:
-        counts[family(row["model"])] = counts.get(family(row["model"]), 0) + 1
+        if row.get("provider") != "codex":
+            counts[family(row["model"])] = counts.get(family(row["model"]), 0) + 1
     stats = [
         (len(rows), "agents"),
         (*[(counts.get(n, 0), n.capitalize() + " agents") for n in ("fable", "opus", "sonnet", "haiku") if counts.get(n) or n != "fable"],),
+        *([(len(codex), "Codex runs")] if codex else []),
         (f"{span:.0f} min", "active time"),
         (f"{sum(r['tool_calls'] for r in rows):,}", "tool calls"),
         (f"{sum(r['output_tokens'] for r in rows):,}", "output tokens"),
@@ -407,6 +487,9 @@ def render(rows, results, title, sizes=(), first_commit=None, top=""):
         if off_model
         else ""
     )
+    wrong = [r for r in codex if r.get("status") == "wrong-target"]
+    if wrong:
+        warning += f'<p class="warn">{len(wrong)} Codex review{"s" if len(wrong) != 1 else ""} had the wrong target (wrong-target). Those reviews do not count as passes.</p>'
 
     def package_cost(pid):
         pattern = re.compile(rf"^{re.escape(str(pid))} (build|test) \d+$")
@@ -444,20 +527,43 @@ def render(rows, results, title, sizes=(), first_commit=None, top=""):
             f'<th class="n">Cycles</th><th class="n">Bugs reported</th><th class="n">Build and test cost</th></tr></thead><tbody>{cells}</tbody></table></div></section>'
         )
 
+    def flag(r):
+        return f' <span class="s-blocked">{esc(r["status"])}</span>' if r.get("status") == "wrong-target" else ""
+
+    def unverified(r):
+        if r.get("price_unverified") and r.get("cost") is not None:
+            return '<br><small style="color:var(--muted)">estimate, price unverified</small>'
+        return ""
+
+    provider_head = "<th>Provider</th>" if codex else ""
     roster = "".join(
-        f'<tr><td>{esc(r["label"])}</td><td>{esc(r["phase"])}</td><td><span class="p-{family(r["model"])}">{esc(r["model"])}</span></td>'
-        f'<td class="t">{esc(r["start"][11:19])}</td><td class="n">{r["minutes"]}</td><td class="n">{r["tool_calls"]}</td><td class="n">{r["output_tokens"]:,}</td><td class="n">{money(r.get("cost"))}</td></tr>'
+        f'<tr><td>{esc(r["label"])}{flag(r)}</td><td>{esc(r["phase"])}</td>'
+        + (f'<td><span class="p-{lane(r)}">{esc(r.get("provider", "claude"))}</span></td>' if codex else "")
+        + f'<td><span class="p-{lane(r)}">{esc(r["model"])}</span></td>'
+        f'<td class="t">{esc(r["start"][11:19])}</td><td class="n">{r["minutes"]}</td><td class="n">{r["tool_calls"]}</td><td class="n">{r["output_tokens"]:,}</td><td class="n">{money(r.get("cost"))}{unverified(r)}</td></tr>'
         for r in rows
     )
+    note = (
+        "<p>Codex costs use OpenAI API list prices read 2026-11-12. Cached input uses the cached price where OpenAI lists one, "
+        "and the input price otherwise. Subscription logins use plan limits instead. A model with no price shows n/a.</p>"
+        if codex
+        else ""
+    )
+    codex_key = '<span><i style="background:var(--codex)"></i>Codex</span>' if codex else ""
+    # Codex colours and rules appear only when Codex rows exist.
+    var_light = "--codex:#1F6F2B;" if codex else ""
+    var_dark = "--codex:#7FD68A;" if codex else ""
+    rule_m = ".m-codex{fill:var(--codex)}" if codex else ""
+    rule_p = ".p-codex{color:var(--codex)}" if codex else ""
     day = esc(rows[0]["start"][:10])
     gap_note = f" {skipped} idle gaps over {IDLE_MINUTES} minutes are cut from the axis." if skipped else ""
     return f"""<title>{esc(title)}</title>
 <meta charset="utf-8">
 <meta name="claude:viewport-fit-sides" content="cover">
 <style>
-:root{{--bg:#EDF1F3;--panel:#F8FAFB;--fg:#14232B;--muted:#4F626D;--line:#C9D3D9;--fable:#8A2F7A;--opus:#3D42A8;--haiku:#B05A00;--sonnet:#0A7570;--other:#6B7780;--ok:#23723F;--bad:#B7322C}}
-@media (prefers-color-scheme: dark){{:root:not([data-theme="light"]){{--bg:#10181D;--panel:#172228;--fg:#E6EDF0;--muted:#9DAFB9;--line:#2E3E47;--fable:#E58BD6;--opus:#9CA1F2;--haiku:#EFA650;--sonnet:#55CFC8;--other:#9DAFB9;--ok:#6FCF8F;--bad:#F2857F;color-scheme:dark}}}}
-:root[data-theme="dark"]{{--bg:#10181D;--panel:#172228;--fg:#E6EDF0;--muted:#9DAFB9;--line:#2E3E47;--fable:#E58BD6;--opus:#9CA1F2;--haiku:#EFA650;--sonnet:#55CFC8;--other:#9DAFB9;--ok:#6FCF8F;--bad:#F2857F;color-scheme:dark}}
+:root{{--bg:#EDF1F3;--panel:#F8FAFB;--fg:#14232B;--muted:#4F626D;--line:#C9D3D9;--fable:#8A2F7A;--opus:#3D42A8;--haiku:#B05A00;--sonnet:#0A7570;--other:#6B7780;{var_light}--ok:#23723F;--bad:#B7322C}}
+@media (prefers-color-scheme: dark){{:root:not([data-theme="light"]){{--bg:#10181D;--panel:#172228;--fg:#E6EDF0;--muted:#9DAFB9;--line:#2E3E47;--fable:#E58BD6;--opus:#9CA1F2;--haiku:#EFA650;--sonnet:#55CFC8;--other:#9DAFB9;{var_dark}--ok:#6FCF8F;--bad:#F2857F;color-scheme:dark}}}}
+:root[data-theme="dark"]{{--bg:#10181D;--panel:#172228;--fg:#E6EDF0;--muted:#9DAFB9;--line:#2E3E47;--fable:#E58BD6;--opus:#9CA1F2;--haiku:#EFA650;--sonnet:#55CFC8;--other:#9DAFB9;{var_dark}--ok:#6FCF8F;--bad:#F2857F;color-scheme:dark}}
 *{{box-sizing:border-box}}
 body{{background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;margin:0}}
 .wrap{{max-width:1160px;margin:0 auto;padding-block:36px 56px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));display:flex;flex-direction:column;gap:32px}}
@@ -476,11 +582,11 @@ section{{display:flex;flex-direction:column;gap:10px;min-width:0}}
 .scroll{{background:var(--panel);border:1px solid var(--line);border-radius:8px;overflow-x:auto}}
 svg{{display:block;width:100%;min-width:760px;height:auto;padding:8px 0}}
 svg text{{fill:var(--muted);font-size:11px}}svg .lane{{fill:var(--fg);font-size:12px;font-weight:600}}svg .rule{{stroke:var(--line)}}
-.m-fable{{fill:var(--fable)}}.m-opus{{fill:var(--opus)}}.m-haiku{{fill:var(--haiku)}}.m-sonnet{{fill:var(--sonnet)}}.m-other{{fill:var(--other)}}
+.m-fable{{fill:var(--fable)}}.m-opus{{fill:var(--opus)}}.m-haiku{{fill:var(--haiku)}}.m-sonnet{{fill:var(--sonnet)}}.m-other{{fill:var(--other)}}{rule_m}
 .key{{display:flex;flex-wrap:wrap;gap:4px 16px;font-size:13px;color:var(--muted)}}.key i{{display:inline-block;width:11px;height:11px;border-radius:2px;margin-right:5px}}
 table{{border-collapse:collapse;width:100%;font-size:13px;min-width:700px}}th,td{{padding:7px 11px;text-align:left;border-bottom:1px solid var(--line)}}th{{font-size:12px;color:var(--muted)}}
 .n{{text-align:right;font-variant-numeric:tabular-nums}}.t{{font-variant-numeric:tabular-nums;white-space:nowrap}}
-.p-fable{{color:var(--fable)}}.p-opus{{color:var(--opus)}}.p-haiku{{color:var(--haiku)}}.p-sonnet{{color:var(--sonnet)}}.p-other{{color:var(--other)}}
+.p-fable{{color:var(--fable)}}.p-opus{{color:var(--opus)}}.p-haiku{{color:var(--haiku)}}.p-sonnet{{color:var(--sonnet)}}.p-other{{color:var(--other)}}{rule_p}
 .s-clean{{color:var(--ok);font-weight:600}}.s-blocked,.s-unverified,.s-needs-decision{{color:var(--bad);font-weight:600}}
 </style>
 <div class="wrap">
@@ -490,10 +596,10 @@ table{{border-collapse:collapse;width:100%;font-size:13px;min-width:700px}}th,td
 {warning}
 <section><h2>Timeline</h2><p>Each bar is one agent, grouped by phase. Hover a bar for details.{gap_note}</p>
 <div class="scroll">{chart}</div>
-<div class="key"><span><i style="background:var(--fable)"></i>Fable</span><span><i style="background:var(--opus)"></i>Opus</span><span><i style="background:var(--haiku)"></i>Haiku</span><span><i style="background:var(--sonnet)"></i>Sonnet</span><span><i style="background:var(--other)"></i>Other</span></div></section>
+<div class="key"><span><i style="background:var(--fable)"></i>Fable</span><span><i style="background:var(--opus)"></i>Opus</span><span><i style="background:var(--haiku)"></i>Haiku</span><span><i style="background:var(--sonnet)"></i>Sonnet</span><span><i style="background:var(--other)"></i>Other</span>{codex_key}</div></section>
 {phases}
 {packages}
-<section><h2>Every agent</h2><div class="scroll"><table><thead><tr><th>Agent</th><th>Phase</th><th>Model</th><th>Start (UTC)</th><th class="n">Minutes</th><th class="n">Tool calls</th><th class="n">Output tokens</th><th class="n">Estimated cost</th></tr></thead><tbody>{roster}</tbody></table></div></section>
+<section><h2>Every agent</h2><div class="scroll"><table><thead><tr><th>Agent</th><th>Phase</th>{provider_head}<th>Model</th><th>Start (UTC)</th><th class="n">Minutes</th><th class="n">Tool calls</th><th class="n">Output tokens</th><th class="n">Estimated cost</th></tr></thead><tbody>{roster}</tbody></table></div>{note}</section>
 </div>
 """
 
@@ -532,7 +638,14 @@ def main():
     args.out = args.out or ".factory/LEDGER.html"
 
     sessions = find_sessions(args, run)
+    # Codex rows count only in cross mode, and only from this run (at or after `since`). In single mode the ledger is as before.
+    cross = run.get("review") == "cross"
     rows = collect(sessions, args.since)
+    if cross:
+        for row in rows:
+            row["provider"] = "claude"
+        rows += read_codex(args.factory, args.since)
+        rows.sort(key=lambda r: r["start"])
     if not rows:
         sys.exit(f"No agents found in {', '.join(sessions)}" + (f" since {args.since}" if args.since else ""))
     results = read_results(args.results)
